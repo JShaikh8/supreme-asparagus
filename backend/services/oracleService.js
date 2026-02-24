@@ -1,0 +1,1988 @@
+// backend/services/oracleService.js
+const oracledb = require('oracledb');
+const ScrapedDataHistory = require('../models/ScrapedDataHistory');
+const logger = require('../utils/logger');
+
+class OracleService {
+  constructor() {
+    this.connection = null;
+    this.config = {
+      user: process.env.ORACLE_USER,
+      password: process.env.ORACLE_PASSWORD,
+      connectString: process.env.ORACLE_CONNECTION_STRING,
+      connectTimeout: 5 // 5 second timeout instead of 20
+    };
+  }
+
+  async connect() {
+    try {
+      if (!this.connection) {
+        this.connection = await oracledb.getConnection(this.config);
+        logger.debug('Oracle DB connected');
+      }
+      return this.connection;
+    } catch (error) {
+      logger.error('Oracle connection error:', error.message);
+      // Throw a more user-friendly error
+      const err = new Error('Oracle database unavailable. This feature requires VPN access.');
+      err.code = 'ORACLE_UNAVAILABLE';
+      err.statusCode = 503;
+      throw err;
+    }
+  }
+
+  // Get Oracle TEAM_ID from COLLEGE_ID (statsId) for a given sport
+  async getTeamIdFromCollegeId(collegeId, sport = 'football') {
+    try {
+      const conn = await this.connect();
+
+      let table, leagueId;
+
+      if (sport === 'football') {
+        table = 'CUSTOMER_DATA.CD_FOOTBALL_ROSTER';
+        leagueId = 16;
+      } else if (sport === 'mensBasketball') {
+        table = 'CUSTOMER_DATA.CD_BK_ROSTER';
+        leagueId = 2;
+      } else if (sport === 'womensBasketball') {
+        table = 'CUSTOMER_DATA.CD_BK_ROSTER';
+        leagueId = 5;
+      } else {
+        table = 'CUSTOMER_DATA.CD_FOOTBALL_ROSTER';
+        leagueId = 16;
+      }
+
+      const query = `
+        SELECT DISTINCT TEAM_ID
+        FROM ${table}
+        WHERE COLLEGE_ID = :collegeId
+          AND LEAGUE_ID = ${leagueId}
+          AND ROWNUM = 1
+      `;
+
+      const result = await conn.execute(query, { collegeId });
+
+      if (result.rows && result.rows.length > 0) {
+        return result.rows[0][0];
+      }
+      return null;
+    } catch (error) {
+      logger.error('Error getting team_id from college_id:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      return null;
+    }
+  }
+
+  async getFootballRoster(teamId, seasonYear) {
+    try {
+      const conn = await this.connect();
+
+      const query = `
+        SELECT r.PLAYER_ID, r.MONIKER, r.LAST_NAME, r.TEAM_ID,
+               r.TEAM_NAME, r.TEAM_NICKNAME, r.HEIGHT, r.WEIGHT,
+               r.UNIFORM, r.POSITION_DESC, r.POSITION_ABBR,
+               r.CLASS, r.ELIGIBILITY, p.HOMETOWN_CITY
+        FROM CUSTOMER_DATA.CD_FOOTBALL_ROSTER r
+        LEFT JOIN GLOBAL.GLB_PEOPLE p ON r.PLAYER_ID = p.PERSON_ID
+        WHERE r.LEAGUE_ID = 16
+          AND r.STATUS = 'Y'
+          AND r.YEAR_LAST = :seasonYear
+          AND r.TEAM_ID = :teamId
+      `;
+
+      // Football season runs Aug-Jan. If no seasonYear provided, calculate:
+      // - Jan: use previous year (bowl season)
+      // - Feb-Jul: use current year (upcoming season)
+      // - Aug-Dec: use current year (current season)
+      let effectiveSeasonYear = seasonYear;
+      if (!effectiveSeasonYear) {
+        const now = new Date();
+        const month = now.getMonth(); // 0-indexed (0=Jan, 11=Dec)
+        const year = now.getFullYear();
+        // January (0) = previous year's season (bowl games)
+        effectiveSeasonYear = (month === 0) ? year - 1 : year;
+      }
+
+      const result = await conn.execute(query, {
+        seasonYear: effectiveSeasonYear,
+        teamId: teamId
+      });
+      
+      return this.transformOracleData(result);
+    } catch (error) {
+      logger.error('Oracle query error:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch football roster: ${error.message}`);
+    }
+  }
+
+  async getMensBasketballRoster(teamId, seasonYear) {
+    try {
+      const conn = await this.connect();
+
+      const query = `
+        SELECT r.PLAYER_ID, r.MONIKER, r.LAST_NAME, r.TEAM_ID,
+               r.TEAM_NAME, r.TEAM_NICKNAME, r.HEIGHT, r.WEIGHT,
+               r.UNIFORM_NUMBER, r.POSITION_NAME, r.POSITION_ABBREV,
+               r.CLASS, r.ELIGIBILITY, p.HOMETOWN_CITY
+        FROM CUSTOMER_DATA.CD_BK_ROSTER r
+        LEFT JOIN GLOBAL.GLB_PEOPLE p ON r.PLAYER_ID = p.PERSON_ID
+        WHERE r.LEAGUE_ID = 2
+          AND r.STATUS = 'Y'
+          AND r.YEAR_LAST = :seasonYear
+          AND r.TEAM_ID = :teamId
+      `;
+
+      // Basketball season spans two years (e.g., 2025-26 season).
+      // If no seasonYear provided, calculate based on current date:
+      // - Nov-Dec: use current year (season just started)
+      // - Jan-Jun: use previous year (still in that season)
+      // - Jul-Oct: use current year (upcoming season)
+      let effectiveSeasonYear = seasonYear;
+      if (!effectiveSeasonYear) {
+        const now = new Date();
+        const month = now.getMonth(); // 0-indexed (0=Jan, 11=Dec)
+        const year = now.getFullYear();
+        // Jan (0) through June (5) = previous year's season
+        effectiveSeasonYear = (month >= 0 && month <= 5) ? year - 1 : year;
+      }
+
+      const result = await conn.execute(query, {
+        seasonYear: effectiveSeasonYear,
+        teamId: teamId
+      });
+
+      return this.transformOracleData(result);
+    } catch (error) {
+      logger.error('Oracle men\'s basketball query error:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch men's basketball roster: ${error.message}`);
+    }
+  }
+
+  async getWomensBasketballRoster(teamId, seasonYear) {
+    try {
+      const conn = await this.connect();
+
+      const query = `
+        SELECT r.PLAYER_ID, r.MONIKER, r.LAST_NAME, r.TEAM_ID,
+               r.TEAM_NAME, r.TEAM_NICKNAME, r.HEIGHT, r.WEIGHT,
+               r.UNIFORM_NUMBER, r.POSITION_NAME, r.POSITION_ABBREV,
+               r.CLASS, r.ELIGIBILITY, p.HOMETOWN_CITY
+        FROM CUSTOMER_DATA.CD_BK_ROSTER r
+        LEFT JOIN GLOBAL.GLB_PEOPLE p ON r.PLAYER_ID = p.PERSON_ID
+        WHERE r.LEAGUE_ID = 5
+          AND r.STATUS = 'Y'
+          AND r.YEAR_LAST = :seasonYear
+          AND r.TEAM_ID = :teamId
+      `;
+
+      // Basketball season spans two years (e.g., 2025-26 season).
+      // If no seasonYear provided, calculate based on current date:
+      // - Nov-Dec: use current year (season just started)
+      // - Jan-Jun: use previous year (still in that season)
+      // - Jul-Oct: use current year (upcoming season)
+      let effectiveSeasonYear = seasonYear;
+      if (!effectiveSeasonYear) {
+        const now = new Date();
+        const month = now.getMonth(); // 0-indexed (0=Jan, 11=Dec)
+        const year = now.getFullYear();
+        // Jan (0) through June (5) = previous year's season
+        effectiveSeasonYear = (month >= 0 && month <= 5) ? year - 1 : year;
+      }
+
+      const result = await conn.execute(query, {
+        seasonYear: effectiveSeasonYear,
+        teamId: teamId
+      });
+
+      return this.transformOracleData(result);
+    } catch (error) {
+      logger.error('Oracle women\'s basketball query error:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch women's basketball roster: ${error.message}`);
+    }
+  }
+
+  // Keep old method for backwards compatibility
+  async getBasketballRoster(teamId, seasonYear, gender = 'M') {
+    if (gender === 'M') {
+      return this.getMensBasketballRoster(teamId, seasonYear);
+    } else {
+      return this.getWomensBasketballRoster(teamId, seasonYear);
+    }
+  }
+
+  // Get football game info from CD_CFB_GAMES
+  async getFootballGame(teamId, gameDate, seasonId) {
+    try {
+      const conn = await this.connect();
+
+      // Convert gameDate from "2025-09-27" to Oracle DATE format
+      const query = `
+        SELECT SEASON_ID, GAME_DATE_CT, GAME_DATE, HOME_TEAM, AWAY_TEAM,
+               HOME_SCORE, AWAY_SCORE, NEUTRAL_SITE, LOCATION, ATTENDANCE
+        FROM CUSTOMER_DATA.CD_CFB_GAMES
+        WHERE SEASON_ID = :seasonId
+          AND (HOME_TEAM = :teamId OR AWAY_TEAM = :teamId)
+          AND TRUNC(GAME_DATE_CT) = TO_DATE(:gameDate, 'YYYY-MM-DD')
+      `;
+
+      const result = await conn.execute(query, {
+        seasonId,
+        teamId,
+        gameDate
+      });
+
+      if (result.rows && result.rows.length > 0) {
+        const row = result.rows[0];
+        return {
+          seasonId: row[0],
+          gameDateCt: row[1],
+          gameDate: row[2],
+          homeTeam: row[3],
+          awayTeam: row[4],
+          homeScore: row[5],
+          awayScore: row[6],
+          neutralSite: row[7],
+          location: row[8],
+          attendance: row[9],
+          source: 'oracle'
+        };
+      }
+      return null;
+    } catch (error) {
+      logger.error('Error fetching football game from Oracle:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch football game: ${error.message}`);
+    }
+  }
+
+  // Get football offensive stats from CD_CFB_OGST
+  async getFootballOffensiveStats(teamId, gameDate, seasonId) {
+    try {
+      const conn = await this.connect();
+
+      // Query CD_CFB_OGST for game-by-game offensive stats (passing, rushing, receiving only)
+      const query = `
+        SELECT PLAYER_ID, TEAM_ID, FIRST_NAME, LAST_NAME,
+               COMP, ATT, PASS_YD, PASS_TD, INT, PASS_LNG,
+               SACKED, SACKED_YD_LST, QB_RATING,
+               RUSH, RUSH_YD, RUSH_AVG, RUSH_TD, RUSH_LNG,
+               RECEPT, REC_YD, REC_AVG, REC_TD, REC_LNG
+        FROM CUSTOMER_DATA.CD_CFB_OGST
+        WHERE SEASON_ID = :seasonId
+          AND TEAM_ID = :teamId
+          AND SPLIT_NUMBER = 0
+          AND TRUNC(GAME_DATE_CT) = TO_DATE(:gameDate, 'YYYY-MM-DD')
+      `;
+
+      const result = await conn.execute(query, {
+        seasonId,
+        teamId,
+        gameDate
+      });
+
+      if (!result.rows || result.rows.length === 0) {
+        return [];
+      }
+
+      // Transform to match our data structure
+      return result.rows.map(row => ({
+        playerId: row[0],
+        teamId: row[1],
+        firstName: row[2],
+        lastName: row[3],
+        fullName: row[2] ? `${row[2]} ${row[3]}` : row[3], // Handle null firstName (e.g., Team player)
+        jersey: null, // Not available in this table
+        passing: {
+          completions: row[4] || 0,
+          attempts: row[5] || 0,
+          yards: row[6] || 0,
+          tds: row[7] || 0,
+          ints: row[8] || 0,
+          long: row[9] || 0,
+          sacks: row[10] || 0,
+          sacksYardsLost: row[11] || 0,
+          rating: row[12] || 0
+        },
+        rushing: {
+          attempts: row[13] || 0,
+          yards: row[14] || 0,
+          average: row[15] || 0,
+          tds: row[16] || 0,
+          long: row[17] || 0
+        },
+        receiving: {
+          receptions: row[18] || 0,
+          yards: row[19] || 0,
+          average: row[20] || 0,
+          tds: row[21] || 0,
+          long: row[22] || 0
+        },
+        source: 'oracle'
+      }));
+    } catch (error) {
+      logger.error('Error fetching football offensive stats from Oracle:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch football offensive stats: ${error.message}`);
+    }
+  }
+
+  async getFootballPuntingStats(teamId, gameDate, seasonId) {
+    try {
+      const conn = await this.connect();
+
+      // Query CD_CFB_PGST for punting stats (player-level)
+      const query = `
+        SELECT PLAYER_ID, TEAM_ID, FIRST_NAME, LAST_NAME,
+               PUNT, PUNT_YDS, PUNT_LNG
+        FROM CUSTOMER_DATA.CD_CFB_PGST
+        WHERE SEASON_ID = :seasonId
+          AND TEAM_ID = :teamId
+          AND SPLIT_NUMBER = 0
+          AND TRUNC(GAME_DATE_CT) = TO_DATE(:gameDate, 'YYYY-MM-DD')
+      `;
+
+      const result = await conn.execute(query, {
+        seasonId,
+        teamId,
+        gameDate
+      });
+
+      if (!result.rows || result.rows.length === 0) {
+        return [];
+      }
+
+      // Transform to match our data structure
+      return result.rows.map(row => ({
+        playerId: row[0],
+        teamId: row[1],
+        firstName: row[2],
+        lastName: row[3],
+        fullName: row[2] ? `${row[2]} ${row[3]}` : row[3], // Handle null firstName (e.g., Team player)
+        punting: {
+          punts: row[4] || 0,
+          yards: row[5] || 0,
+          long: row[6] || 0
+        },
+        source: 'oracle'
+      }));
+    } catch (error) {
+      logger.error('Error fetching football punting stats from Oracle:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch football punting stats: ${error.message}`);
+    }
+  }
+
+  async getFootballReturnsStats(teamId, gameDate, seasonId) {
+    try {
+      const conn = await this.connect();
+
+      // Query CD_CFB_RGST for punt and kick returns (player-level)
+      const returnsQuery = `
+        SELECT PLAYER_ID, TEAM_ID, FIRST_NAME, LAST_NAME,
+               PUNT_RET, PUNT_RET_YD, PUNT_RET_LNG,
+               KICK_RET, KICK_RET_YD, KICK_RET_LNG
+        FROM CUSTOMER_DATA.CD_CFB_RGST
+        WHERE SEASON_ID = :seasonId
+          AND TEAM_ID = :teamId
+          AND SPLIT_NUMBER = 0
+          AND TRUNC(GAME_DATE_CT) = TO_DATE(:gameDate, 'YYYY-MM-DD')
+      `;
+
+      // Query CD_CFB_DGST for interception returns (player-level)
+      const intQuery = `
+        SELECT PLAYER_ID, TEAM_ID, FIRST_NAME, LAST_NAME,
+               INT, INT_YD, INT_LNG
+        FROM CUSTOMER_DATA.CD_CFB_DGST
+        WHERE SEASON_ID = :seasonId
+          AND TEAM_ID = :teamId
+          AND SPLIT_NUMBER = 0
+          AND TRUNC(GAME_DATE_CT) = TO_DATE(:gameDate, 'YYYY-MM-DD')
+      `;
+
+      const [returnsResult, intResult] = await Promise.all([
+        conn.execute(returnsQuery, { seasonId, teamId, gameDate }),
+        conn.execute(intQuery, { seasonId, teamId, gameDate })
+      ]);
+
+      // Merge returns data by player
+      const playerReturnsMap = new Map();
+
+      // Add punt/kick returns
+      if (returnsResult.rows && returnsResult.rows.length > 0) {
+        returnsResult.rows.forEach(row => {
+          const playerId = row[0];
+          const fullName = row[2] ? `${row[2]} ${row[3]}` : row[3]; // Handle null firstName (e.g., Team player)
+
+          playerReturnsMap.set(playerId, {
+            playerId: row[0],
+            teamId: row[1],
+            firstName: row[2],
+            lastName: row[3],
+            fullName,
+            returns: {
+              puntReturns: row[4] || 0,
+              puntReturnYards: row[5] || 0,
+              puntReturnLong: row[6] || 0,
+              kickReturns: row[7] || 0,
+              kickReturnYards: row[8] || 0,
+              kickReturnLong: row[9] || 0,
+              interceptions: 0,
+              interceptionYards: 0,
+              interceptionLong: 0
+            },
+            source: 'oracle'
+          });
+        });
+      }
+
+      // Add interception returns
+      if (intResult.rows && intResult.rows.length > 0) {
+        intResult.rows.forEach(row => {
+          const playerId = row[0];
+          const fullName = row[2] ? `${row[2]} ${row[3]}` : row[3]; // Handle null firstName (e.g., Team player)
+
+          const existing = playerReturnsMap.get(playerId);
+          if (existing) {
+            // Player already has punt/kick returns, add interceptions
+            existing.returns.interceptions = row[4] || 0;
+            existing.returns.interceptionYards = row[5] || 0;
+            existing.returns.interceptionLong = row[6] || 0;
+          } else {
+            // Player only has interception returns
+            playerReturnsMap.set(playerId, {
+              playerId: row[0],
+              teamId: row[1],
+              firstName: row[2],
+              lastName: row[3],
+              fullName,
+              returns: {
+                puntReturns: 0,
+                puntReturnYards: 0,
+                puntReturnLong: 0,
+                kickReturns: 0,
+                kickReturnYards: 0,
+                kickReturnLong: 0,
+                interceptions: row[4] || 0,
+                interceptionYards: row[5] || 0,
+                interceptionLong: row[6] || 0
+              },
+              source: 'oracle'
+            });
+          }
+        });
+      }
+
+      return Array.from(playerReturnsMap.values());
+    } catch (error) {
+      logger.error('Error fetching football returns stats from Oracle:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch football returns stats: ${error.message}`);
+    }
+  }
+
+  // Get basketball game info from CD_BK_GAMES
+  async getBasketballGame(teamId, gameDate, seasonId, gender = 'M') {
+    try {
+      const conn = await this.connect();
+      const leagueId = gender === 'M' ? 2 : 5; // 2 = Men's, 5 = Women's
+
+      const query = `
+        SELECT SEASON_ID, GAME_DATE_CT, GAME_DATE, HOME_TEAM, AWAY_TEAM,
+               HOME_SCORE, AWAY_SCORE, NEUTRAL_SITE, LOCATION, ATTENDANCE
+        FROM CUSTOMER_DATA.CD_BK_GAMES
+        WHERE SEASON_ID = :seasonId
+          AND LEAGUE_ID = ${leagueId}
+          AND (HOME_TEAM = :teamId OR AWAY_TEAM = :teamId)
+          AND TRUNC(GAME_DATE_CT) = TO_DATE(:gameDate, 'YYYY-MM-DD')
+      `;
+
+      const result = await conn.execute(query, {
+        seasonId,
+        teamId,
+        gameDate
+      });
+
+      if (result.rows && result.rows.length > 0) {
+        const row = result.rows[0];
+        return {
+          seasonId: row[0],
+          gameDateCt: row[1],
+          gameDate: row[2],
+          homeTeam: row[3],
+          awayTeam: row[4],
+          homeScore: row[5],
+          awayScore: row[6],
+          neutralSite: row[7],
+          location: row[8],
+          attendance: row[9],
+          source: 'oracle'
+        };
+      }
+      return null;
+    } catch (error) {
+      logger.error('Error fetching basketball game from Oracle:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch basketball game: ${error.message}`);
+    }
+  }
+
+  // Get basketball player game stats using two-query approach for performance
+  // Query 1: Get all stats from CD_BK_PLAYER_GAME_STATS (fast, indexed)
+  // Query 2: Get MINUTES_PLAYED from BASKETBALL.BK_PLAYER_GAME_STATS (targeted)
+  async getBasketballPlayerStats(teamId, gameDate, seasonId, gender = 'M') {
+    try {
+      const conn = await this.connect();
+      const leagueId = gender === 'M' ? 2 : 5; // 2 = Men's, 5 = Women's
+
+      // Query 1: Get all player stats (fast - uses indexes on TEAM_ID, GAME_DATE)
+      const query1 = `
+        SELECT
+          PLAYER_ID,
+          TEAM_ID,
+          FIRST_NAME,
+          LAST_NAME,
+          GAME_CODE,
+          MINUTES_SECONDS,
+          FIELD_GOALS_MADE,
+          FIELD_GOALS_ATT,
+          CASE WHEN FIELD_GOALS_ATT > 0
+               THEN ROUND((FIELD_GOALS_MADE / FIELD_GOALS_ATT) * 100, 1)
+               ELSE 0 END as FG_PCT,
+          THREE_POINT_MADE,
+          THREE_POINT_ATT,
+          CASE WHEN THREE_POINT_ATT > 0
+               THEN ROUND((THREE_POINT_MADE / THREE_POINT_ATT) * 100, 1)
+               ELSE 0 END as THREE_PCT,
+          FREE_THROWS_MADE,
+          FREE_THROWS_ATT,
+          CASE WHEN FREE_THROWS_ATT > 0
+               THEN ROUND((FREE_THROWS_MADE / FREE_THROWS_ATT) * 100, 1)
+               ELSE 0 END as FT_PCT,
+          OFFENSIVE_REBOUNDS,
+          DEFENSIVE_REBOUNDS,
+          TOTAL_REBOUNDS,
+          ASSISTS,
+          TURNOVERS,
+          STEALS,
+          BLOCKS,
+          PERSONAL_FOULS,
+          POINTS
+        FROM CUSTOMER_DATA.CD_BK_PLAYER_GAME_STATS
+        WHERE SEASON_ID = :seasonId
+          AND LEAGUE_ID = ${leagueId}
+          AND TEAM_ID = :teamId
+          AND SPLIT_NUMBER = 0
+          AND TRUNC(GAME_DATE) = TO_DATE(:gameDate, 'YYYY-MM-DD')
+          AND UPPER(LAST_NAME) NOT IN ('TEAM', 'TM')
+          AND PLAYER_ID IS NOT NULL
+      `;
+
+      logger.debug(`🏀 Query 1: Fetching stats from CD_BK_PLAYER_GAME_STATS for teamId=${teamId}, gameDate=${gameDate}`);
+
+      const result1 = await conn.execute(query1, {
+        seasonId,
+        teamId,
+        gameDate
+      });
+
+      logger.debug(`🏀 Query 1 returned ${result1.rows ? result1.rows.length : 0} player records`);
+
+      if (!result1.rows || result1.rows.length === 0) {
+        return [];
+      }
+
+      // Extract GAME_CODE and PLAYER_IDs for second query
+      const gameCode = result1.rows[0][4]; // GAME_CODE from first row
+      const playerIds = result1.rows.map(row => row[0]); // All PLAYER_IDs
+
+      // Query 2: Get MINUTES_PLAYED for these specific players (fast - targeted WHERE clause)
+      const minutesMap = new Map();
+
+      if (gameCode && playerIds.length > 0) {
+        try {
+          const query2 = `
+            SELECT PLAYER_ID, MINUTES_PLAYED
+            FROM BASKETBALL.BK_PLAYER_GAME_STATS
+            WHERE GAME_CODE = :gameCode
+              AND PLAYER_ID IN (${playerIds.map((_, i) => `:playerId${i}`).join(', ')})
+          `;
+
+          const bindVars = { gameCode };
+          playerIds.forEach((id, i) => {
+            bindVars[`playerId${i}`] = id;
+          });
+
+          logger.debug(`🏀 Query 2: Fetching minutes from BASKETBALL.BK_PLAYER_GAME_STATS for ${playerIds.length} players`);
+
+          const result2 = await conn.execute(query2, bindVars);
+
+          logger.debug(`🏀 Query 2 returned ${result2.rows ? result2.rows.length : 0} minute records`);
+
+          // Build map of playerId -> minutes
+          if (result2.rows) {
+            result2.rows.forEach(row => {
+              minutesMap.set(row[0], row[1]); // playerId -> minutes
+            });
+          }
+        } catch (error) {
+          logger.warn(`⚠️ Failed to fetch minutes from BASKETBALL table: ${error.message}`);
+          // Continue without minutes data
+        }
+      }
+
+      // Transform and merge results
+      return result1.rows.map(row => {
+        const playerId = row[0];
+        const minutesFromBK = minutesMap.get(playerId);
+
+        return {
+          playerId: playerId,
+          teamId: row[1],
+          firstName: row[2],
+          lastName: row[3],
+          fullName: row[2] ? `${row[2]} ${row[3]}` : row[3],
+          minutesPlayed: minutesFromBK || row[5] || 0, // Prefer BK table, fallback to CD table
+          fieldGoals: {
+            made: row[6] || 0,
+            attempts: row[7] || 0,
+            percentage: row[8] || 0
+          },
+          threePointers: {
+            made: row[9] || 0,
+            attempts: row[10] || 0,
+            percentage: row[11] || 0
+          },
+          freeThrows: {
+            made: row[12] || 0,
+            attempts: row[13] || 0,
+            percentage: row[14] || 0
+          },
+          rebounds: {
+            offensive: row[15] || 0,
+            defensive: row[16] || 0,
+            total: row[17] || 0
+          },
+          assists: row[18] || 0,
+          turnovers: row[19] || 0,
+          steals: row[20] || 0,
+          blocks: row[21] || 0,
+          fouls: row[22] || 0,
+          points: row[23] || 0,
+          source: 'oracle'
+        };
+      });
+    } catch (error) {
+      logger.error('Error fetching basketball player stats from Oracle:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch basketball player stats: ${error.message}`);
+    }
+  }
+
+  // Get football schedule from CD_FOOTBALL_SCHEDULE
+  async getFootballSchedule(teamId, seasonId, startDate = null) {
+    try {
+      const conn = await this.connect();
+
+      // Build WHERE clause with optional date filter
+      let whereClause = `
+        WHERE CD.SEASON_ID = :seasonId
+          AND (CD.HOME_TEAM_ID = :teamId OR CD.AWAY_TEAM_ID = :teamId)
+      `;
+
+      const params = { seasonId, teamId };
+
+      // Add date filter if provided (show games on or after startDate)
+      if (startDate) {
+        whereClause += `
+          AND TRUNC(CD.GAME_DATE_CT) >= TO_DATE(:startDate, 'YYYY-MM-DD')
+        `;
+        params.startDate = startDate;
+      }
+
+      const query = `
+        SELECT
+          CD.GAME_CODE,
+          TO_CHAR(CD.GAME_DATE_CT, 'YYYY-MM-DD') AS GAME_DATE,
+          TO_CHAR(CD.GAME_DATE_CT, 'HH24:MI') AS GAME_TIME,
+          CD.MAKEUP_DATE,
+          CD.STATUS,
+          CD.AWAY_TEAM_ID,
+          CD.AWAY_TEAM_NAME,
+          CD.AWAY_TEAM_NICKNAME,
+          CD.AWAY_TEAM_ABBREV,
+          CD.HOME_TEAM_ID,
+          CD.HOME_TEAM_NAME,
+          CD.HOME_TEAM_NICKNAME,
+          CD.HOME_TEAM_ABBREV,
+          CD.GAME_TYPE_NAME,
+          CD.NEUTRAL_SITE,
+          CD.STADIUM_ID,
+          CD.STADIUM_NAME,
+          GV.CITY AS STADIUM_CITY,
+          GS.AP_NAME AS STATE,
+          CD.TBA_FLAG,
+          CD.HOME_CONF_GAME,
+          CD.AWAY_CONF_GAME,
+          LISTAGG(DISTINCT gt.TV_ABBREV4, ', ') WITHIN GROUP (ORDER BY gt.TV_ABBREV4) AS BROADCASTS,
+          LISTAGG(DISTINCT gt.DESCRIPTION, ', ') WITHIN GROUP (ORDER BY gt.DESCRIPTION) AS FULL_BROADCASTS
+        FROM CUSTOMER_DATA.CD_FOOTBALL_SCHEDULE CD
+        LEFT JOIN GLOBAL.GLB_VENUE GV
+          ON CD.STADIUM_ID = GV.VENUE_ID
+        LEFT JOIN GLOBAL.GLB_STATE GS
+          ON GV.STATE_ID = GS.STATE_ID
+        LEFT JOIN CUSTOMER_DATA.CD_FOOTBALL_FRANCHISE CF
+          ON CD.STADIUM_ID = CF.STADIUM_ID
+          AND CF.SEASON_ID = :seasonId
+        LEFT JOIN GLOBAL.TV_SCHEDULES ts
+          ON CD.GAME_CODE = ts.GAME_CODE
+          AND ts.LEAGUE_ID = 16
+        LEFT JOIN GLOBAL.GLB_TV gt
+          ON ts.TV_ID = gt.TV_ID
+          AND gt.LEAGUE_ID = 16
+        ${whereClause}
+        GROUP BY
+          CD.GAME_CODE,
+          CD.GAME_DATE_CT,
+          CD.MAKEUP_DATE,
+          CD.STATUS,
+          CD.AWAY_TEAM_ID,
+          CD.AWAY_TEAM_NAME,
+          CD.AWAY_TEAM_NICKNAME,
+          CD.AWAY_TEAM_ABBREV,
+          CD.HOME_TEAM_ID,
+          CD.HOME_TEAM_NAME,
+          CD.HOME_TEAM_NICKNAME,
+          CD.HOME_TEAM_ABBREV,
+          CD.GAME_TYPE_NAME,
+          CD.NEUTRAL_SITE,
+          CD.STADIUM_ID,
+          CD.STADIUM_NAME,
+          GV.CITY,
+          GS.AP_NAME,
+          CD.TBA_FLAG,
+          CD.HOME_CONF_GAME,
+          CD.AWAY_CONF_GAME
+        ORDER BY CD.GAME_DATE_CT
+      `;
+
+      const result = await conn.execute(query, params);
+
+      if (!result.rows || result.rows.length === 0) {
+        return [];
+      }
+
+      // Transform to match our schema
+      return result.rows.map(row => {
+        const isHome = row[9] === teamId; // HOME_TEAM_ID === teamId
+        const opponentId = isHome ? row[5] : row[9]; // AWAY_TEAM_ID : HOME_TEAM_ID
+        const opponentName = isHome ? row[6] : row[10]; // AWAY_TEAM_NAME : HOME_TEAM_NAME
+        const opponentNickname = isHome ? row[7] : row[11]; // AWAY_TEAM_NICKNAME : HOME_TEAM_NICKNAME
+
+        return {
+          gameCode: row[0],
+          gameId: row[0],
+          date: row[1], // GAME_DATE in YYYY-MM-DD format
+          time: row[2], // GAME_TIME in HH24:MI format
+          makeupDate: row[3],
+          status: row[4],
+
+          // Team info
+          isHome: isHome,
+          isAway: !isHome,
+          isNeutral: row[14] === 'Y', // NEUTRAL_SITE
+          locationIndicator: row[14] === 'Y' ? 'N' : (isHome ? 'H' : 'A'),
+
+          // Opponent info
+          opponentId: opponentId,
+          opponent: `${opponentName} ${opponentNickname}`.trim(),
+          opponentName: opponentName,
+          opponentNickname: opponentNickname,
+          opponentAbbrev: isHome ? row[8] : row[12],
+
+          // Venue info
+          venue: row[16], // STADIUM_NAME
+          venueId: row[15], // STADIUM_ID
+          location: row[17] && row[18] ? `${row[17]}, ${row[18]}` : (row[17] || row[18] || null), // CITY, STATE
+          city: row[17],
+          state: row[18],
+
+          // Game details
+          gameType: row[13], // GAME_TYPE_NAME
+          tba: row[19] === 'Y', // TBA_FLAG
+          isConferenceGame: isHome ? row[20] === 'Y' : row[21] === 'Y', // HOME_CONF_GAME or AWAY_CONF_GAME
+
+          // Media
+          tv: row[22], // BROADCASTS (TV_ABBREV4)
+          tvFull: row[23], // FULL_BROADCASTS (DESCRIPTION)
+
+          source: 'oracle'
+        };
+      });
+    } catch (error) {
+      logger.error('Error fetching football schedule from Oracle:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch football schedule: ${error.message}`);
+    }
+  }
+
+  // Get basketball schedule for a team (works for both mens and womens)
+  async getBasketballSchedule(teamId, seasonId, leagueId, startDate = null) {
+    try {
+      const conn = await this.connect();
+
+      // Build WHERE clause with optional date filter
+      let whereClause = `
+        WHERE CD.SEASON_ID = :seasonId
+          AND (CD.HOME_TEAM_ID = :teamId OR CD.AWAY_TEAM_ID = :teamId)
+      `;
+
+      const params = { seasonId, teamId };
+
+      // Add date filter if provided (show games on or after startDate)
+      if (startDate) {
+        whereClause += `
+          AND TRUNC(CD.GAME_DATE_CT) >= TO_DATE(:startDate, 'YYYY-MM-DD')
+        `;
+        params.startDate = startDate;
+      }
+
+      const query = `
+        SELECT
+          CD.GAME_CODE,
+          TO_CHAR(CD.GAME_DATE_CT, 'YYYY-MM-DD') AS GAME_DATE,
+          TO_CHAR(CD.GAME_DATE_CT, 'HH24:MI') AS GAME_TIME,
+          CD.MAKEUP_DATE,
+          CD.STATUS,
+          CD.AWAY_TEAM_ID,
+          CD.AWAY_TEAM_NAME,
+          CD.AWAY_TEAM_NICKNAME,
+          CD.AWAY_TEAM_ABBREV,
+          CD.HOME_TEAM_ID,
+          CD.HOME_TEAM_NAME,
+          CD.HOME_TEAM_NICKNAME,
+          CD.HOME_TEAM_ABBREV,
+          CD.GAME_TYPE_DESC,
+          CD.NEUTRAL_SITE,
+          CD.ARENA_ID,
+          CD.ARENA_NAME,
+          GV.CITY AS ARENA_CITY,
+          GS.AP_NAME AS STATE,
+          CD.TBA_FLAG,
+          CD.CONF_GAME,
+          LISTAGG(DISTINCT gt.TV_ABBREV4, ', ') WITHIN GROUP (ORDER BY gt.TV_ABBREV4) AS BROADCASTS,
+          LISTAGG(DISTINCT gt.DESCRIPTION, ', ') WITHIN GROUP (ORDER BY gt.DESCRIPTION) AS FULL_BROADCASTS
+        FROM CUSTOMER_DATA.CD_BK_SCHEDULE CD
+        LEFT JOIN GLOBAL.GLB_VENUE GV
+          ON CD.ARENA_ID = GV.VENUE_ID
+        LEFT JOIN GLOBAL.GLB_STATE GS
+          ON GV.STATE_ID = GS.STATE_ID
+        LEFT JOIN CUSTOMER_DATA.CD_BK_FRANCHISE CF
+          ON CD.ARENA_ID = CF.ARENA_ID
+          AND CF.SEASON_ID = :seasonId
+        LEFT JOIN GLOBAL.TV_SCHEDULES ts
+          ON CD.GAME_CODE = ts.GAME_CODE
+          AND ts.LEAGUE_ID = :leagueId
+        LEFT JOIN GLOBAL.GLB_TV gt
+          ON ts.TV_ID = gt.TV_ID
+          AND gt.LEAGUE_ID = :leagueId
+        ${whereClause}
+        GROUP BY
+          CD.GAME_CODE,
+          CD.GAME_DATE_CT,
+          CD.MAKEUP_DATE,
+          CD.STATUS,
+          CD.AWAY_TEAM_ID,
+          CD.AWAY_TEAM_NAME,
+          CD.AWAY_TEAM_NICKNAME,
+          CD.AWAY_TEAM_ABBREV,
+          CD.HOME_TEAM_ID,
+          CD.HOME_TEAM_NAME,
+          CD.HOME_TEAM_NICKNAME,
+          CD.HOME_TEAM_ABBREV,
+          CD.GAME_TYPE_DESC,
+          CD.NEUTRAL_SITE,
+          CD.ARENA_ID,
+          CD.ARENA_NAME,
+          GV.CITY,
+          GS.AP_NAME,
+          CD.TBA_FLAG,
+          CD.CONF_GAME
+        ORDER BY CD.GAME_DATE_CT
+      `;
+
+      params.leagueId = leagueId; // Add leagueId to params
+
+      const result = await conn.execute(query, params);
+
+      if (!result.rows || result.rows.length === 0) {
+        return [];
+      }
+
+      // Transform to match our schema
+      return result.rows.map(row => {
+        const isHome = row[9] === teamId; // HOME_TEAM_ID === teamId
+        const opponentId = isHome ? row[5] : row[9]; // AWAY_TEAM_ID : HOME_TEAM_ID
+        const opponentName = isHome ? row[6] : row[10]; // AWAY_TEAM_NAME : HOME_TEAM_NAME
+        const opponentNickname = isHome ? row[7] : row[11]; // AWAY_TEAM_NICKNAME : HOME_TEAM_NICKNAME
+
+        return {
+          gameCode: row[0],
+          gameId: row[0],
+          date: row[1], // GAME_DATE in YYYY-MM-DD format
+          time: row[2], // GAME_TIME in HH24:MI format
+          makeupDate: row[3],
+          status: row[4],
+
+          // Team info
+          isHome: isHome,
+          isAway: !isHome,
+          isNeutral: row[14] === 'Y', // NEUTRAL_SITE
+          locationIndicator: row[14] === 'Y' ? 'N' : (isHome ? 'H' : 'A'),
+
+          // Opponent info
+          opponentId: opponentId,
+          opponent: `${opponentName} ${opponentNickname}`.trim(),
+          opponentName: opponentName,
+          opponentNickname: opponentNickname,
+          opponentAbbrev: isHome ? row[8] : row[12],
+
+          // Venue info (using arena instead of stadium)
+          venue: row[16], // ARENA_NAME
+          venueId: row[15], // ARENA_ID
+          location: row[17] && row[18] ? `${row[17]}, ${row[18]}` : (row[17] || row[18] || null), // CITY, STATE
+          city: row[17],
+          state: row[18],
+
+          // Game details
+          gameType: row[13], // GAME_TYPE_DESC
+          tba: row[19] === 'Y', // TBA_FLAG
+          isConferenceGame: row[20] === 'Y', // CONF_GAME
+
+          // Media
+          tv: row[21], // BROADCASTS (TV_ABBREV4)
+          tvFull: row[22], // FULL_BROADCASTS (DESCRIPTION)
+
+          source: 'oracle'
+        };
+      });
+    } catch (error) {
+      logger.error('Error fetching basketball schedule from Oracle:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch basketball schedule: ${error.message}`);
+    }
+  }
+
+  transformOracleData(result) {
+    if (!result.rows) return [];
+
+    // Helper to convert inches to feet'inches" format
+    const inchesToFeetInches = (inches) => {
+      if (!inches || isNaN(inches)) return inches;
+      const totalInches = parseInt(inches);
+      const feet = Math.floor(totalInches / 12);
+      const remainingInches = totalInches % 12;
+      return `${feet}'${remainingInches}"`;
+    };
+
+    return result.rows.map(row => ({
+      playerId: row[0],
+      firstName: row[1]?.split(' ')[0],
+      lastName: row[2],
+      teamId: row[3],
+      teamName: row[4],
+      teamNickname: row[5],
+      height: row[6] ? inchesToFeetInches(row[6]) : null, // Convert height
+      weight: row[7] ? row[7].toString() : null,
+      jersey: row[8] ? row[8].toString() : null,
+      position: row[9],
+      positionAbbr: row[10],
+      year: row[11] ? row[11].toString() : null,
+      eligibility: row[12] ? row[12].toString() : null,
+      hometown: row[13],
+      source: 'oracle',
+      displayName: `${row[1]} ${row[2]}`
+    }));
+  }
+
+  // ========== BASELINE DATA METHODS ==========
+  // These methods fetch data from ScrapedDataHistory (baseline) instead of Oracle
+
+  // Get baseline schedule for any sport
+  async getBaselineSchedule(moduleId, teamId, sport) {
+    try {
+      logger.debug(`📦 Fetching baseline schedule for moduleId=${moduleId}, teamId=${teamId}`);
+
+      // Use find() to get ALL games from baseline
+      const baselineRecords = await ScrapedDataHistory.find({
+        moduleId,
+        teamId,
+        dataType: 'schedule'
+      }).sort({ savedAt: -1 });
+
+      if (!baselineRecords || baselineRecords.length === 0) {
+        logger.debug(`📦 No baseline schedule found for ${moduleId} / ${teamId}`);
+        return [];
+      }
+
+      logger.debug(`📦 Baseline found: ${baselineRecords.length} game records from ${baselineRecords[0].savedAt}`);
+
+      // Extract the data from each baseline record
+      const games = baselineRecords.map(record => ({
+        ...record.data,
+        source: 'baseline'
+      }));
+
+      return games;
+    } catch (error) {
+      logger.error('Error fetching baseline schedule:', error.message);
+      throw new Error(`Failed to fetch baseline schedule: ${error.message}`);
+    }
+  }
+
+  // Get baseline roster for any sport
+  async getBaselineRoster(moduleId, teamId, sport) {
+    try {
+      logger.debug(`📦 Fetching baseline roster for moduleId=${moduleId}, teamId=${teamId}`);
+
+      // Use find() instead of findOne() to get ALL players from baseline
+      const baselineRecords = await ScrapedDataHistory.find({
+        moduleId,
+        teamId,
+        dataType: 'roster'
+      }).sort({ savedAt: -1 });
+
+      if (!baselineRecords || baselineRecords.length === 0) {
+        logger.debug(`📦 No baseline found for ${moduleId} / ${teamId}`);
+        return [];
+      }
+
+      logger.debug(`📦 Baseline found: ${baselineRecords.length} player records from ${baselineRecords[0].savedAt}`);
+
+      // Extract the data from each baseline record
+      const players = baselineRecords.map(record => ({
+        ...record.data,
+        source: 'baseline'
+      }));
+
+      return players;
+    } catch (error) {
+      logger.error('Error fetching baseline roster:', error.message);
+      throw new Error(`Failed to fetch baseline roster: ${error.message}`);
+    }
+  }
+
+  // Get baseline football game stats (per matchKey)
+  async getBaselineFootballStats(moduleId, teamId, gameDate, seasonId, category) {
+    try {
+      // Generate matchKey similar to how the module does it
+      const matchKey = `${teamId}_${seasonId}_${gameDate}`;
+      logger.debug(`📦 Fetching baseline football ${category} stats for matchKey=${matchKey}`);
+
+      const baseline = await ScrapedDataHistory.findOne({
+        moduleId,
+        matchKey,
+        dataType: 'stats'
+      }).sort({ savedAt: -1 });
+
+      if (!baseline) {
+        logger.debug(`📦 No baseline found for ${matchKey}`);
+        return [];
+      }
+
+      logger.debug(`📦 Baseline found from ${baseline.savedAt}`);
+
+      // Return the baseline data with source marked as 'baseline'
+      if (Array.isArray(baseline.data)) {
+        return baseline.data.map(player => ({
+          ...player,
+          source: 'baseline'
+        }));
+      }
+
+      return [];
+    } catch (error) {
+      logger.error('Error fetching baseline football stats:', error.message);
+      throw new Error(`Failed to fetch baseline football stats: ${error.message}`);
+    }
+  }
+
+  // Get baseline basketball game stats (per matchKey)
+  async getBaselineBasketballStats(moduleId, teamId, gameDate, seasonId, gender = 'M') {
+    try {
+      // Generate matchKey similar to how the module does it
+      const matchKey = `${teamId}_${seasonId}_${gameDate}`;
+      logger.debug(`📦 Fetching baseline basketball stats for matchKey=${matchKey}`);
+
+      const baseline = await ScrapedDataHistory.findOne({
+        moduleId,
+        matchKey,
+        dataType: 'stats'
+      }).sort({ savedAt: -1 });
+
+      if (!baseline) {
+        logger.debug(`📦 No baseline found for ${matchKey}`);
+        return [];
+      }
+
+      logger.debug(`📦 Baseline found from ${baseline.savedAt}`);
+
+      // Return the baseline data with source marked as 'baseline'
+      if (Array.isArray(baseline.data)) {
+        return baseline.data.map(player => ({
+          ...player,
+          source: 'baseline'
+        }));
+      }
+
+      return [];
+    } catch (error) {
+      logger.error('Error fetching baseline basketball stats:', error.message);
+      throw new Error(`Failed to fetch baseline basketball stats: ${error.message}`);
+    }
+  }
+
+  // Generic baseline stats getter - works for any module/matchKey
+  async getBaselineStats(moduleId, matchKey) {
+    try {
+      logger.debug(`📦 Fetching baseline stats for moduleId=${moduleId}, matchKey=${matchKey}`);
+
+      const baseline = await ScrapedDataHistory.findOne({
+        moduleId,
+        matchKey,
+        dataType: 'stats'
+      }).sort({ savedAt: -1 });
+
+      if (!baseline) {
+        logger.debug(`📦 No baseline found for ${matchKey}`);
+        return [];
+      }
+
+      logger.debug(`📦 Baseline found from ${baseline.savedAt}`);
+
+      // Return the baseline data with source marked as 'baseline'
+      if (Array.isArray(baseline.data)) {
+        return baseline.data.map(player => ({
+          ...player,
+          source: 'baseline'
+        }));
+      }
+
+      return [];
+    } catch (error) {
+      logger.error('Error fetching baseline stats:', error.message);
+      throw new Error(`Failed to fetch baseline stats: ${error.message}`);
+    }
+  }
+
+  /**
+   * Fetch NBA schedule data from Oracle
+   * @param {number} teamId - The team's statsId (Oracle team ID)
+   * @param {number} seasonId - Season ID (e.g., 202501)
+   * @param {string} startDate - Start date in YYYY-MM-DD format (optional)
+   * @returns {Promise<Array>} Array of games
+   */
+  async getNBASchedule(teamId, seasonId = 202501, startDate = null) {
+    try {
+      const conn = await this.connect();
+      const NBA_LEAGUE_ID = 1;
+
+      // Default to start of season if no startDate provided
+      const defaultStartDate = '2024-10-22';
+      // If startDate is provided and is after June 2025, extend end date to cover it
+      const effectiveStartDate = startDate || defaultStartDate;
+      const defaultEndDate = '2026-05-30'; // Extended to cover full 2025-26 season
+
+      const sql = `
+        SELECT
+          s.*,
+          /* ET wall-clock ISO */
+          CASE
+            WHEN s.GAME_DATE_CT = TRUNC(s.GAME_DATE_CT) THEN NULL
+            ELSE TO_CHAR(
+                   FROM_TZ(CAST(s.GAME_DATE_CT AS TIMESTAMP), 'America/Chicago')
+                   AT TIME ZONE 'America/New_York',
+                   'YYYY-MM-DD"T"HH24:MI:SS'
+                 )
+          END AS GAME_DATETIME_EST,
+          CASE
+            WHEN s.GAME_DATE_CT = TRUNC(s.GAME_DATE_CT) THEN NULL
+            ELSE TO_CHAR(
+                   FROM_TZ(CAST(s.GAME_DATE_CT AS TIMESTAMP), 'America/Chicago')
+                   AT TIME ZONE 'America/New_York',
+                   'HH24:MI:SS'
+                 )
+          END AS GAME_TIME_EST,
+
+          /* ET calendar date */
+          TO_CHAR(
+            FROM_TZ(CAST(s.GAME_DATE_CT AS TIMESTAMP), 'America/Chicago')
+            AT TIME ZONE 'America/New_York',
+            'YYYY-MM-DD'
+          ) AS GAME_DATE_EST,
+
+          /* TV from GLOBAL */
+          (
+            SELECT LISTAGG(DISTINCT gt.TV_ABBREV4, ', ') WITHIN GROUP (ORDER BY gt.TV_ABBREV4)
+              FROM global.tv_schedules ts
+              JOIN global.glb_tv gt
+                ON gt.TV_ID = ts.TV_ID
+               AND gt.LEAGUE_ID = :leagueId
+             WHERE ts.GAME_CODE = s.GAME_CODE
+               AND ts.LEAGUE_ID = :leagueId
+          ) AS TV_ABBREVS
+        FROM   CUSTOMER_DATA.CD_BK_SCHEDULE s
+        WHERE  s.SEASON_ID = :seasonId
+          AND  (s.HOME_TEAM_ID_1032 = :teamId OR s.AWAY_TEAM_ID_1032 = :teamId)
+          AND  s.GAME_DATE_CT BETWEEN TO_DATE(:startDate,'YYYY-MM-DD')
+                                   AND TO_DATE(:endDate,'YYYY-MM-DD') + 1
+        ORDER BY s.GAME_DATE_CT, s.GAME_CODE
+      `;
+
+      const binds = {
+        seasonId,
+        teamId: Number(teamId), // Ensure teamId is a number for Oracle
+        startDate: effectiveStartDate,
+        endDate: defaultEndDate,
+        leagueId: NBA_LEAGUE_ID
+      };
+
+      logger.debug('NBA Schedule Oracle Query Parameters:', binds);
+
+      const opts = { outFormat: oracledb.OUT_FORMAT_OBJECT };
+      const result = await conn.execute(sql, binds, opts);
+
+      logger.debug(`NBA Schedule Oracle Query returned ${result.rows.length} games`);
+
+      return result.rows.map(r => {
+        // Pretty "h:mm am/pm ET" from GAME_TIME_EST
+        let gameTimeEst = null;
+        if (r.GAME_TIME_EST) {
+          const [HH, MM] = r.GAME_TIME_EST.split(':');
+          let h = Number(HH);
+          const ampm = h >= 12 ? 'pm' : 'am';
+          h = ((h + 11) % 12) + 1;
+          gameTimeEst = `${h}:${MM} ${ampm} ET`;
+        }
+
+        let makeup = null;
+        if (r.MAKEUP_DATE) {
+          const m2 = r.MAKEUP_DATE;
+          const y2 = m2.getFullYear();
+          const mm2 = String(m2.getMonth() + 1).padStart(2, '0');
+          const dd2 = String(m2.getDate()).padStart(2, '0');
+          makeup = `${y2}-${mm2}-${dd2}`;
+        }
+
+        // Parse and sort broadcasters for consistent comparison
+        const broadcasters = (r.TV_ABBREVS || '')
+          .split(',')
+          .map(s => s.trim())
+          .filter(Boolean);
+        const sortedBroadcasters = [...new Set(broadcasters)].sort();
+
+        return {
+          gameId: r.GAME_CODE,
+          gameDate: r.GAME_DATE_EST, // ET calendar date
+          date: r.GAME_DATE_EST, // Alias for compatibility
+          dateTimeEst: r.GAME_DATETIME_EST || null,
+          time: gameTimeEst, // For comparison compatibility
+          gameTimeEst,
+          status: r.STATUS,
+          postponed: r.POSTPONED === 'Y',
+          suspended: r.SUSPENDED === 'Y',
+          makeUpDate: makeup,
+          venue: r.ARENA_NAME, // For comparison compatibility
+          location: r.ARENA_NAME, // For comparison compatibility
+          arena: {
+            id: r.ARENA_ID,
+            name: r.ARENA_NAME
+          },
+          neutralSite: r.NEUTRAL_SITE === 'Y',
+          tbaFlag: r.TBA_FLAG === 'Y',
+          totalQuarters: r.QUARTERS,
+          tv: sortedBroadcasters.join(', '), // For comparison compatibility (sorted)
+          tvArray: sortedBroadcasters, // Individual broadcasters for granular comparison
+          broadcasters: sortedBroadcasters,
+          homeTeam: {
+            teamId: r.HOME_TEAM_ID_1032,
+            name: r.HOME_TEAM_NAME,
+            nickname: r.HOME_TEAM_NICKNAME,
+            abbrev: r.HOME_TEAM_ABBREV,
+            score: r.HOME_SCORE
+          },
+          awayTeam: {
+            teamId: r.AWAY_TEAM_ID_1032,
+            name: r.AWAY_TEAM_NAME,
+            nickname: r.AWAY_TEAM_NICKNAME,
+            abbrev: r.AWAY_TEAM_ABBREV,
+            score: r.AWAY_SCORE
+          },
+          source: 'oracle'
+        };
+      });
+    } catch (error) {
+      logger.error('Error fetching NBA schedule from Oracle:', error.message);
+      throw new Error(`Failed to fetch NBA schedule: ${error.message}`);
+    }
+  }
+
+  /**
+   * Fetch NBA boxscore data from Oracle for a specific game
+   * Uses TEAM_ID + GAME_DATE for matching (more reliable than GAME_CODE)
+   * @param {string} statsId - Stats ID / Oracle TEAM_ID (e.g., "1610612737" for Atlanta Hawks)
+   * @param {string} gameDate - Game date in YYYY-MM-DD format
+   * @param {number} seasonId - Season ID (e.g., 202501)
+   * @returns {Promise<Array>} Array of player stats for both teams in the game
+   */
+  async getNBABoxscore(statsId, gameDate, seasonId = 202501) {
+    try {
+      const conn = await this.connect();
+
+      logger.debug(`🏀 NBA Boxscore Oracle Query: statsId=${statsId}, gameDate=${gameDate}, seasonId=${seasonId}`);
+
+      // First get the GAME_CODE for this team's game on this date
+      const gameCodeSql = `
+        SELECT DISTINCT GAME_CODE
+          FROM CUSTOMER_DATA.CD_BK_PLAYER_GAME_STATS
+         WHERE SEASON_ID    = :seasonId
+           AND SPLIT_NUMBER = 0
+           AND TEAM_ID      = :statsId
+           AND TRUNC(GAME_DATE) = TO_DATE(:gameDate, 'YYYY-MM-DD')
+      `;
+
+      const gameCodeResult = await conn.execute(gameCodeSql, { statsId, gameDate, seasonId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+
+      if (gameCodeResult.rows.length === 0) {
+        logger.debug(`🏀 No game found in Oracle for team ${statsId} on ${gameDate}`);
+        return [];
+      }
+
+      const gameCode = gameCodeResult.rows[0].GAME_CODE;
+      logger.debug(`🏀 Found GAME_CODE: ${gameCode} for team ${statsId} on ${gameDate}`);
+
+      // Now get ALL players from this game (both teams)
+      const sql = `
+        SELECT *
+          FROM CUSTOMER_DATA.CD_BK_PLAYER_GAME_STATS
+         WHERE SEASON_ID    = :seasonId
+           AND SPLIT_NUMBER = 0
+           AND GAME_CODE    = :gameCode
+      `;
+
+      const binds = { gameCode, seasonId };
+      const opts = { outFormat: oracledb.OUT_FORMAT_OBJECT };
+      const result = await conn.execute(sql, binds, opts);
+
+      logger.debug(`🏀 NBA Boxscore Oracle Query returned ${result.rows.length} raw rows`);
+
+      // Helper to convert seconds to "MM:SS" format (zero-padded to match NBA scraped format)
+      const secondsToMinutes = (totalSeconds) => {
+        if (totalSeconds === null || totalSeconds === undefined) return '00:00';
+        const mins = Math.floor(totalSeconds / 60);
+        const secs = totalSeconds % 60;
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+      };
+
+      // Only include players who actually played (GAMES = 1)
+      return result.rows
+        .filter(r => r.GAMES === 1)
+        .map(r => ({
+          playerName:            `${r.MONIKER || r.FIRST_NAME} ${r.LAST_NAME}`.trim(),
+          team:                  (r.HOME_TEAM === 'Y' || Number(r.HOME_TEAM) === 1) ? 'home' : 'away',
+          minutes:               secondsToMinutes(r.MINUTES_SECONDS),
+          points:                r.POINTS,
+          fieldGoalsMade:        r.FIELD_GOALS_MADE,
+          fieldGoalsAttempted:   r.FIELD_GOALS_ATT,
+          threePointersMade:     r.THREE_POINT_MADE,
+          threePointersAttempted: r.THREE_POINT_ATT,
+          freeThrowsMade:        r.FREE_THROWS_MADE,
+          freeThrowsAttempted:   r.FREE_THROWS_ATT,
+          offensiveRebounds:     r.OFFENSIVE_REBOUNDS,
+          defensiveRebounds:     r.DEFENSIVE_REBOUNDS,
+          rebounds:              r.TOTAL_REBOUNDS,
+          assists:               r.ASSISTS,
+          steals:                r.STEALS,
+          blocks:                r.BLOCKS,
+          blocksReceived:        r.BLOCKS_RECEIVED,
+          turnovers:             r.TURNOVERS,
+          personalFouls:         r.PERSONAL_FOULS,
+          technicalFouls:        r.TECHNICAL_FOUL,
+          foulsReceived:         r.FOULS_RECEIVED,
+          plusMinusPoints:       r.PLUS_MINUS,
+          dunks:                 r.DUNKS,
+          tipIns:                r.TIP_INS,
+          pointsFastBreak:       r.FB_POINTS,
+          pointsInThePaint:      r.POINTS_IN_THE_PAINT,
+          pointsSecondChance:    r.POINTS_SECOND_CHANCE,
+          source:                'oracle'
+        }));
+    } catch (error) {
+      logger.error('Error fetching NBA boxscore from Oracle:', error.message);
+      throw new Error(`Failed to fetch NBA boxscore: ${error.message}`);
+    }
+  }
+
+  /**
+   * Fetch MLB schedule data from Oracle
+   * @param {number} teamId - The team's MLB team ID from Oracle
+   * @param {number} seasonId - Season ID (e.g., 202507 for 2025 regular season)
+   * @param {string} startDate - Start date in YYYY-MM-DD format
+   * @param {string} endDate - End date in YYYY-MM-DD format
+   * @returns {Promise<Array>} Array of games
+   */
+  async getMLBSchedule(teamId, seasonId = 202507, startDate = null, endDate = null) {
+    try {
+      const conn = await this.connect();
+      const MLB_LEAGUE_ID = 7;
+
+      // Default date range for MLB season (March - November)
+      // Derive year from seasonId (e.g., 202507 -> 2025) rather than current year
+      const seasonYear = Math.floor(seasonId / 100);
+      const seasonStart = `${seasonYear}-03-01`;
+      const seasonEnd = `${seasonYear}-11-30`;
+      // Only use provided startDate if it falls within the season range,
+      // otherwise it creates an inverted date range (e.g., today 2026 vs season end 2025)
+      const effectiveStartDate = (startDate && startDate >= seasonStart && startDate <= seasonEnd)
+        ? startDate
+        : seasonStart;
+      const effectiveEndDate = endDate || seasonEnd;
+
+      console.log(`[MLB ORACLE] teamId=${teamId}, seasonId=${seasonId}, seasonYear=${seasonYear}, startDate=${startDate}, effectiveStart=${effectiveStartDate}, effectiveEnd=${effectiveEndDate}`);
+
+      // Status code mapping
+      const statusMap = {
+        '-1': 'Pre-Game',
+        '0': 'Scheduled',
+        '1': 'Scheduled',
+        '2': 'In Progress',
+        '23': 'Delay',
+        '4': 'Final'
+      };
+
+      // Query WITHOUT team filter - filter by team in JavaScript after
+      const sql = `
+        SELECT
+          s.GAME_CODE,
+          s.GAME_DATE_CT,
+          TO_CHAR(s.GAME_DATE_CT, 'YYYY-MM-DD') AS GAME_DATE,
+          TO_CHAR(s.GAME_DATE_CT, 'HH24:MI') AS GAME_TIME,
+          s.MAKEUP_DATE,
+          s.STATUS,
+          s.AWAY_TEAM_ID,
+          s.AWAY_TEAM_NAME,
+          s.AWAY_TEAM_NICKNAME,
+          s.AWAY_TEAM_ABBREV,
+          s.HOME_TEAM_ID,
+          s.HOME_TEAM_NAME,
+          s.HOME_TEAM_NICKNAME,
+          s.HOME_TEAM_ABBREV,
+          s.NUMBER_OF_GAMES,
+          s.DAY_OR_NIGHT,
+          s.GAME_TYPE_NAME,
+          s.NEUTRAL_SITE,
+          s.PARK_ID,
+          s.PARK_NAME,
+          s.TBA_FLAG,
+          LISTAGG(DISTINCT gt.TV_ABBREV4, ', ') WITHIN GROUP (ORDER BY gt.TV_ABBREV4) AS BROADCASTS
+        FROM CUSTOMER_DATA.CD_BASEBALL_SCHEDULE s
+        LEFT JOIN GLOBAL.TV_SCHEDULES ts
+          ON s.GAME_CODE = ts.GAME_CODE AND ts.LEAGUE_ID = :leagueId
+        LEFT JOIN GLOBAL.GLB_TV gt
+          ON ts.TV_ID = gt.TV_ID AND gt.LEAGUE_ID = :leagueId
+        WHERE s.SEASON_ID = :seasonId
+          AND s.GAME_DATE_CT BETWEEN TO_DATE(:startDate, 'YYYY-MM-DD')
+                                AND TO_DATE(:endDate, 'YYYY-MM-DD') + 1
+        GROUP BY
+          s.GAME_CODE,
+          s.GAME_DATE_CT,
+          TO_CHAR(s.GAME_DATE_CT, 'YYYY-MM-DD'),
+          TO_CHAR(s.GAME_DATE_CT, 'HH24:MI'),
+          s.MAKEUP_DATE,
+          s.STATUS,
+          s.AWAY_TEAM_ID,
+          s.AWAY_TEAM_NAME,
+          s.AWAY_TEAM_NICKNAME,
+          s.AWAY_TEAM_ABBREV,
+          s.HOME_TEAM_ID,
+          s.HOME_TEAM_NAME,
+          s.HOME_TEAM_NICKNAME,
+          s.HOME_TEAM_ABBREV,
+          s.NUMBER_OF_GAMES,
+          s.DAY_OR_NIGHT,
+          s.GAME_TYPE_NAME,
+          s.NEUTRAL_SITE,
+          s.PARK_ID,
+          s.PARK_NAME,
+          s.TBA_FLAG
+        ORDER BY s.GAME_DATE_CT, s.GAME_CODE
+      `;
+
+      const binds = {
+        seasonId,
+        startDate: effectiveStartDate,
+        endDate: effectiveEndDate,
+        leagueId: MLB_LEAGUE_ID
+      };
+
+      console.log('[MLB ORACLE] binds:', JSON.stringify(binds));
+
+      const opts = { outFormat: oracledb.OUT_FORMAT_OBJECT };
+      const result = await conn.execute(sql, binds, opts);
+
+      console.log(`[MLB ORACLE] Total games in season: ${result.rows.length}`);
+
+      // Filter to this team's games
+      // Try matching teamId as both number and string since Oracle ID format is unknown
+      const tid = Number(teamId);
+      const tidStr = String(teamId);
+      const teamRows = result.rows.filter(r =>
+        Number(r.HOME_TEAM_ID) === tid || Number(r.AWAY_TEAM_ID) === tid ||
+        String(r.HOME_TEAM_ID) === tidStr || String(r.AWAY_TEAM_ID) === tidStr
+      );
+
+      console.log(`[MLB ORACLE] Filtered to team ${teamId}: ${teamRows.length} games`);
+
+      // If no team games found, throw descriptive error with sample IDs
+      if (teamRows.length === 0 && result.rows.length > 0) {
+        const sampleIds = new Set();
+        result.rows.slice(0, 30).forEach(r => {
+          sampleIds.add(r.HOME_TEAM_ID);
+          sampleIds.add(r.AWAY_TEAM_ID);
+        });
+        const sampleList = [...sampleIds].sort((a, b) => a - b).join(', ');
+        throw new Error(
+          `Team ID mismatch: Oracle has ${result.rows.length} games for season ${seasonId}, ` +
+          `but none match teamId=${teamId}. ` +
+          `Sample Oracle team IDs: [${sampleList}]. ` +
+          `Check if mlbId on the team document matches Oracle's HOME_TEAM_ID/AWAY_TEAM_ID.`
+        );
+      }
+
+      if (result.rows.length === 0) {
+        throw new Error(
+          `No games found in Oracle for season ${seasonId} ` +
+          `between ${effectiveStartDate} and ${effectiveEndDate}. ` +
+          `Verify SEASON_ID exists in CD_BASEBALL_SCHEDULE.`
+        );
+      }
+
+      return teamRows.map(r => {
+        // Parse game time to h:mm am/pm CT format
+        let gameTimeEst = null;
+        if (r.GAME_TIME) {
+          const [HH, MM] = r.GAME_TIME.split(':');
+          let h = Number(HH);
+          const ampm = h >= 12 ? 'pm' : 'am';
+          h = ((h + 11) % 12) + 1;
+          gameTimeEst = `${h}:${MM} ${ampm} CT`;
+        }
+
+        // Format makeup date if present
+        let makeup = null;
+        if (r.MAKEUP_DATE) {
+          const m2 = r.MAKEUP_DATE;
+          const y2 = m2.getFullYear();
+          const mm2 = String(m2.getMonth() + 1).padStart(2, '0');
+          const dd2 = String(m2.getDate()).padStart(2, '0');
+          makeup = `${y2}-${mm2}-${dd2}`;
+        }
+
+        // Get readable status from the schedule table's STATUS column
+        const statusCode = String(r.STATUS);
+        const status = statusMap[statusCode] || (r.STATUS ? `Status ${r.STATUS}` : 'Scheduled');
+
+        // Parse TV broadcasts
+        const broadcasters = (r.BROADCASTS || '')
+          .split(',')
+          .map(s => s.trim())
+          .filter(Boolean);
+        const sortedBroadcasters = [...new Set(broadcasters)].sort();
+
+        // Determine if team is home or away
+        const isHome = Number(r.HOME_TEAM_ID) === Number(teamId);
+
+        return {
+          gameId: r.GAME_CODE,
+          date: r.GAME_DATE,
+          time: gameTimeEst,
+          status: status,
+          statusCode: r.STATUS,
+          makeUpDate: makeup,
+          venue: r.PARK_NAME,
+          venueId: r.PARK_ID,
+          dayNight: r.DAY_OR_NIGHT,
+          gameType: r.GAME_TYPE_NAME,
+          gameNumber: r.NUMBER_OF_GAMES,
+          doubleHeader: r.NUMBER_OF_GAMES > 1,
+          neutralSite: r.NEUTRAL_SITE === 'Y',
+          tbaFlag: r.TBA_FLAG === 'Y',
+          // TV broadcasts
+          tv: sortedBroadcasters.join(', '),
+          tvArray: sortedBroadcasters,
+          // Team perspective
+          isHome: isHome,
+          isAway: !isHome,
+          locationIndicator: r.NEUTRAL_SITE === 'Y' ? 'N' : (isHome ? 'H' : 'A'),
+          // Opponent info
+          opponent: isHome
+            ? `${r.AWAY_TEAM_NAME || ''} ${r.AWAY_TEAM_NICKNAME || ''}`.trim()
+            : `${r.HOME_TEAM_NAME || ''} ${r.HOME_TEAM_NICKNAME || ''}`.trim(),
+          opponentId: isHome ? r.AWAY_TEAM_ID : r.HOME_TEAM_ID,
+          opponentAbbrev: isHome ? r.AWAY_TEAM_ABBREV : r.HOME_TEAM_ABBREV,
+          // Full team data
+          homeTeam: {
+            teamId: r.HOME_TEAM_ID,
+            name: r.HOME_TEAM_NAME,
+            nickname: r.HOME_TEAM_NICKNAME,
+            abbrev: r.HOME_TEAM_ABBREV
+          },
+          awayTeam: {
+            teamId: r.AWAY_TEAM_ID,
+            name: r.AWAY_TEAM_NAME,
+            nickname: r.AWAY_TEAM_NICKNAME,
+            abbrev: r.AWAY_TEAM_ABBREV
+          },
+          source: 'oracle'
+        };
+      });
+    } catch (error) {
+      logger.error('Error fetching MLB schedule from Oracle:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch MLB schedule: ${error.message}`);
+    }
+  }
+
+  /**
+   * Fetch NCAA baseball schedule from Oracle (same CD_BASEBALL_SCHEDULE table as MLB)
+   * @param {number} teamId - Oracle team ID for the NCAA baseball team
+   * @param {number} seasonId - Season ID (e.g., 202614 for 2026 NCAA baseball)
+   * @param {string} startDate - Optional start date filter in YYYY-MM-DD format
+   * @returns {Promise<Array>} Array of games
+   */
+  async getNCAABaseballSchedule(teamId, seasonId, startDate = null) {
+    try {
+      const conn = await this.connect();
+
+      // Derive year from seasonId (e.g., 202614 -> 2026)
+      const seasonYear = Math.floor(seasonId / 100);
+      const leagueId = seasonId % 100; // Extract league ID from seasonId
+
+      // Date range for college baseball season (Feb - July)
+      const seasonStart = `${seasonYear}-02-01`;
+      const seasonEnd = `${seasonYear}-07-31`;
+      const effectiveStartDate = (startDate && startDate >= seasonStart && startDate <= seasonEnd)
+        ? startDate
+        : seasonStart;
+
+      logger.debug(`NCAA Baseball Oracle: teamId=${teamId}, seasonId=${seasonId}, seasonYear=${seasonYear}, leagueId=${leagueId}, startDate=${effectiveStartDate}`);
+
+      // Status code mapping (same as MLB)
+      const statusMap = {
+        '-1': 'Pre-Game',
+        '0': 'Scheduled',
+        '1': 'Scheduled',
+        '2': 'In Progress',
+        '23': 'Delay',
+        '4': 'Final'
+      };
+
+      const sql = `
+        SELECT
+          s.GAME_CODE,
+          s.GAME_DATE_CT,
+          TO_CHAR(s.GAME_DATE_CT, 'YYYY-MM-DD') AS GAME_DATE,
+          TO_CHAR(s.GAME_DATE_CT, 'HH24:MI') AS GAME_TIME,
+          s.MAKEUP_DATE,
+          s.STATUS,
+          s.AWAY_TEAM_ID,
+          s.AWAY_TEAM_NAME,
+          s.AWAY_TEAM_NICKNAME,
+          s.AWAY_TEAM_ABBREV,
+          s.HOME_TEAM_ID,
+          s.HOME_TEAM_NAME,
+          s.HOME_TEAM_NICKNAME,
+          s.HOME_TEAM_ABBREV,
+          s.NUMBER_OF_GAMES,
+          s.DAY_OR_NIGHT,
+          s.GAME_TYPE_NAME,
+          s.NEUTRAL_SITE,
+          s.PARK_ID,
+          s.PARK_NAME,
+          s.TBA_FLAG,
+          LISTAGG(DISTINCT gt.TV_ABBREV4, ', ') WITHIN GROUP (ORDER BY gt.TV_ABBREV4) AS BROADCASTS
+        FROM CUSTOMER_DATA.CD_BASEBALL_SCHEDULE s
+        LEFT JOIN GLOBAL.TV_SCHEDULES ts
+          ON s.GAME_CODE = ts.GAME_CODE AND ts.LEAGUE_ID = :leagueId
+        LEFT JOIN GLOBAL.GLB_TV gt
+          ON ts.TV_ID = gt.TV_ID AND gt.LEAGUE_ID = :leagueId
+        WHERE s.SEASON_ID = :seasonId
+          AND (s.HOME_TEAM_ID = :teamId OR s.AWAY_TEAM_ID = :teamId)
+          AND s.GAME_DATE_CT >= TO_DATE(:startDate, 'YYYY-MM-DD')
+        GROUP BY
+          s.GAME_CODE,
+          s.GAME_DATE_CT,
+          TO_CHAR(s.GAME_DATE_CT, 'YYYY-MM-DD'),
+          TO_CHAR(s.GAME_DATE_CT, 'HH24:MI'),
+          s.MAKEUP_DATE,
+          s.STATUS,
+          s.AWAY_TEAM_ID,
+          s.AWAY_TEAM_NAME,
+          s.AWAY_TEAM_NICKNAME,
+          s.AWAY_TEAM_ABBREV,
+          s.HOME_TEAM_ID,
+          s.HOME_TEAM_NAME,
+          s.HOME_TEAM_NICKNAME,
+          s.HOME_TEAM_ABBREV,
+          s.NUMBER_OF_GAMES,
+          s.DAY_OR_NIGHT,
+          s.GAME_TYPE_NAME,
+          s.NEUTRAL_SITE,
+          s.PARK_ID,
+          s.PARK_NAME,
+          s.TBA_FLAG
+        ORDER BY s.GAME_DATE_CT, s.GAME_CODE
+      `;
+
+      const binds = {
+        seasonId,
+        teamId,
+        startDate: effectiveStartDate,
+        leagueId
+      };
+
+      const opts = { outFormat: oracledb.OUT_FORMAT_OBJECT };
+      const result = await conn.execute(sql, binds, opts);
+
+      if (!result.rows || result.rows.length === 0) {
+        return [];
+      }
+
+      return result.rows.map(r => {
+        // Parse game time to h:mm am/pm CT format
+        let gameTimeFormatted = null;
+        if (r.GAME_TIME) {
+          const [HH, MM] = r.GAME_TIME.split(':');
+          let h = Number(HH);
+          const ampm = h >= 12 ? 'pm' : 'am';
+          h = ((h + 11) % 12) + 1;
+          gameTimeFormatted = `${h}:${MM} ${ampm} CT`;
+        }
+
+        // Get readable status
+        const statusCode = String(r.STATUS);
+        const status = statusMap[statusCode] || (r.STATUS ? `Status ${r.STATUS}` : 'Scheduled');
+
+        // Parse TV broadcasts
+        const broadcasters = (r.BROADCASTS || '')
+          .split(',')
+          .map(s => s.trim())
+          .filter(Boolean);
+        const sortedBroadcasters = [...new Set(broadcasters)].sort();
+
+        // Determine if team is home or away
+        const isHome = Number(r.HOME_TEAM_ID) === Number(teamId);
+
+        return {
+          gameId: r.GAME_CODE,
+          date: r.GAME_DATE,
+          time: gameTimeFormatted,
+          status: status,
+          statusCode: r.STATUS,
+          venue: r.PARK_NAME,
+          venueId: r.PARK_ID,
+          dayNight: r.DAY_OR_NIGHT,
+          gameType: r.GAME_TYPE_NAME,
+          gameNumber: r.NUMBER_OF_GAMES,
+          doubleHeader: r.NUMBER_OF_GAMES > 1,
+          neutralSite: r.NEUTRAL_SITE === 'Y',
+          tbaFlag: r.TBA_FLAG === 'Y',
+          // TV broadcasts
+          tv: sortedBroadcasters.join(', '),
+          tvArray: sortedBroadcasters,
+          // Team perspective
+          isHome: isHome,
+          isAway: !isHome,
+          locationIndicator: r.NEUTRAL_SITE === 'Y' ? 'N' : (isHome ? 'H' : 'A'),
+          // Opponent info
+          opponent: isHome
+            ? `${r.AWAY_TEAM_NAME || ''} ${r.AWAY_TEAM_NICKNAME || ''}`.trim()
+            : `${r.HOME_TEAM_NAME || ''} ${r.HOME_TEAM_NICKNAME || ''}`.trim(),
+          opponentId: isHome ? r.AWAY_TEAM_ID : r.HOME_TEAM_ID,
+          opponentAbbrev: isHome ? r.AWAY_TEAM_ABBREV : r.HOME_TEAM_ABBREV,
+          // Full team data
+          homeTeam: {
+            teamId: r.HOME_TEAM_ID,
+            name: r.HOME_TEAM_NAME,
+            nickname: r.HOME_TEAM_NICKNAME,
+            abbrev: r.HOME_TEAM_ABBREV
+          },
+          awayTeam: {
+            teamId: r.AWAY_TEAM_ID,
+            name: r.AWAY_TEAM_NAME,
+            nickname: r.AWAY_TEAM_NICKNAME,
+            abbrev: r.AWAY_TEAM_ABBREV
+          },
+          source: 'oracle'
+        };
+      });
+    } catch (error) {
+      logger.error('Error fetching NCAA baseball schedule from Oracle:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch NCAA baseball schedule: ${error.message}`);
+    }
+  }
+
+  /**
+   * Fetch MLB roster data from Oracle
+   * @param {number} teamId - The team's MLB team ID from Oracle
+   * @param {number} seasonYear - Season year (e.g., 2025)
+   * @param {string} rosterType - Roster type filter (optional: 'active', '40Man', etc.)
+   * @returns {Promise<Array>} Array of player roster entries
+   */
+  async getMLBRoster(teamId, seasonYear = null, rosterType = null) {
+    try {
+      const conn = await this.connect();
+
+      // Default to current year if not provided
+      const effectiveSeasonYear = seasonYear || new Date().getFullYear();
+
+      logger.debug(`MLB Roster Oracle Query: teamId=${teamId}, season=${effectiveSeasonYear}, rosterType=${rosterType || 'all'}`);
+
+      // Query CD_BASEBALL_ROSTER for team roster
+      // Note: MLB roster table structure - query the key fields for comparison
+      const sql = `
+        SELECT
+          r.PLAYER_ID,
+          r.MONIKER,
+          r.LAST_NAME,
+          r.TEAM_ID,
+          r.TEAM_NAME,
+          r.TEAM_NICKNAME,
+          r.UNIFORM,
+          r.POSITION,
+          r.STATUS,
+          r.HEIGHT,
+          r.WEIGHT,
+          r.BATS,
+          r.THROWS,
+          r.BIRTH_DATE,
+          r.MLB_DEBUT,
+          r.YEAR_FIRST,
+          r.YEAR_LAST,
+          p.HOMETOWN_CITY,
+          p.HOMETOWN_STATE
+        FROM CUSTOMER_DATA.CD_BASEBALL_ROSTER r
+        LEFT JOIN GLOBAL.GLB_PEOPLE p ON r.PLAYER_ID = p.PERSON_ID
+        WHERE r.TEAM_ID = :teamId
+          AND r.YEAR_LAST >= :seasonYear
+          AND r.STATUS = 'Y'
+        ORDER BY r.LAST_NAME, r.MONIKER
+      `;
+
+      const result = await conn.execute(
+        sql,
+        {
+          teamId: Number(teamId),
+          seasonYear: effectiveSeasonYear
+        },
+        { outFormat: require('oracledb').OUT_FORMAT_OBJECT }
+      );
+
+      logger.debug(`MLB Roster Oracle Query returned ${result.rows.length} players`);
+
+      // Transform to match our comparison schema
+      return result.rows.map(r => {
+        // Convert height from inches to feet'inches" format if numeric
+        let formattedHeight = null;
+        if (r.HEIGHT) {
+          const totalInches = parseInt(r.HEIGHT);
+          if (!isNaN(totalInches)) {
+            const feet = Math.floor(totalInches / 12);
+            const inches = totalInches % 12;
+            formattedHeight = `${feet}'${inches}"`;
+          } else {
+            formattedHeight = r.HEIGHT;
+          }
+        }
+
+        return {
+          playerId: r.PLAYER_ID,
+          personId: r.PLAYER_ID,  // Alias for MLB API compatibility
+          firstName: r.MONIKER,
+          lastName: r.LAST_NAME,
+          displayName: `${r.MONIKER || ''} ${r.LAST_NAME || ''}`.trim(),
+          fullName: `${r.MONIKER || ''} ${r.LAST_NAME || ''}`.trim(),
+          teamId: r.TEAM_ID,
+          teamName: r.TEAM_NAME,
+          teamNickname: r.TEAM_NICKNAME,
+          jersey: r.UNIFORM ? r.UNIFORM.toString() : null,
+          jerseyNumber: r.UNIFORM ? r.UNIFORM.toString() : null,
+          position: r.POSITION,
+          status: r.STATUS,
+          height: formattedHeight,
+          weight: r.WEIGHT ? r.WEIGHT.toString() : null,
+          batSide: r.BATS,
+          pitchHand: r.THROWS,
+          birthDate: r.BIRTH_DATE,
+          mlbDebutDate: r.MLB_DEBUT,
+          yearFirst: r.YEAR_FIRST,
+          yearLast: r.YEAR_LAST,
+          hometown: r.HOMETOWN_CITY && r.HOMETOWN_STATE
+            ? `${r.HOMETOWN_CITY}, ${r.HOMETOWN_STATE}`
+            : r.HOMETOWN_CITY || r.HOMETOWN_STATE || null,
+          source: 'oracle'
+        };
+      });
+    } catch (error) {
+      logger.error('Error fetching MLB roster from Oracle:', error.message);
+      if (error.code === 'ORACLE_UNAVAILABLE') {
+        throw error;
+      }
+      throw new Error(`Failed to fetch MLB roster: ${error.message}`);
+    }
+  }
+
+  async close() {
+    if (this.connection) {
+      try {
+        await this.connection.close();
+        this.connection = null;
+      } catch (error) {
+        logger.error('Error closing Oracle connection:', error);
+      }
+    }
+  }
+}
+
+module.exports = new OracleService();

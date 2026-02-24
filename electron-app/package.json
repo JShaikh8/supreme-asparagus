@@ -1,0 +1,96 @@
+{
+  "name": "sportsdata-pro-desktop",
+  "version": "1.0.0",
+  "description": "SportsData Pro Desktop - Sports Data Management and Comparison Tool",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "dev:sync": "node copy-backend.js && electron . --dev",
+    "dev:watch": "node dev-watch.js",
+    "prebuild": "cd ../frontend && npm run build && cd ../electron-app && node copy-backend.js",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:all": "electron-builder --win --mac"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.12.2",
+    "bull": "^4.16.5",
+    "bullmq": "^5.61.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "electron-updater": "^6.1.7",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.2.1",
+    "express-validator": "^7.3.1",
+    "helmet": "^8.1.0",
+    "keytar": "^7.9.0",
+    "mongoose": "^8.19.1",
+    "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
+    "oracledb": "^6.9.0",
+    "pdf-parse": "^1.1.1",
+    "swagger-ui-express": "^5.0.1",
+    "winston": "^3.18.3",
+    "xml2js": "^0.6.2",
+    "yamljs": "^0.3.0"
+  },
+  "devDependencies": {
+    "electron": "^39.2.3",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.sportsdata.desktop",
+    "productName": "SportsData Pro Desktop",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "config.js",
+      "server.js",
+      "renderer/**/*",
+      "utils/**/*",
+      "backend/**/*",
+      "!backend/node_modules"
+    ],
+    "extraResources": [
+      {
+        "from": "../frontend/build",
+        "to": "app/frontend/build",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/oracledb/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.png",
+      "category": "public.app-category.business"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "JShaikh8",
+      "repo": "supreme-broccoli"
+    }
+  }
+}

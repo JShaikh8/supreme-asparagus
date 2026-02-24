@@ -1,0 +1,682 @@
+openapi: 3.0.3
+info:
+  title: SportsData Pro API
+  description: |
+    REST API for the SportsData Pro platform. Provides access to sports team data,
+    rosters, schedules, statistics, and comparison features.
+
+    ## Authentication
+    Currently, the API does not require authentication for public endpoints.
+    Internal endpoints require the application to be run with `ENABLE_INTERNAL_FEATURES=true`.
+
+    ## Rate Limiting
+    No rate limiting is currently enforced (internal tool).
+
+    ## Export Formats
+    Most endpoints support export via `?format=json|csv|xlsx`
+  version: 1.0.0
+  contact:
+    name: SportsData Pro
+  license:
+    name: Internal Use Only
+
+servers:
+  - url: http://localhost:5000
+    description: Local development
+  - url: https://supreme-broccoli-backend.onrender.com
+    description: Production
+
+tags:
+  - name: Teams
+    description: Team management operations
+  - name: Data
+    description: Data retrieval and statistics
+  - name: Fetch
+    description: Data collection/scraping operations
+  - name: Comparison
+    description: Data comparison operations
+  - name: Search
+    description: Global search functionality
+  - name: Settings
+    description: Application configuration
+  - name: NBA
+    description: NBA-specific endpoints
+  - name: System
+    description: System status and health (internal only)
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Basic health check endpoint
+      tags: [System]
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: OK
+                  mongodb:
+                    type: string
+                    example: Connected
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  # ==================== PUBLIC API (v1) ====================
+  /api/v1/teams:
+    get:
+      summary: List all teams
+      description: Get a list of teams with optional filtering
+      tags: [Teams]
+      parameters:
+        - name: league
+          in: query
+          schema:
+            type: string
+            enum: [NCAA, NFL, NBA, NHL, MLB, MILB]
+        - name: conference
+          in: query
+          schema:
+            type: string
+        - name: active
+          in: query
+          schema:
+            type: boolean
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, csv, xlsx]
+      responses:
+        '200':
+          description: List of teams
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  count:
+                    type: integer
+                  teams:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Team'
+
+  /api/v1/teams/{teamId}:
+    get:
+      summary: Get team details
+      tags: [Teams]
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Team details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+        '404':
+          description: Team not found
+
+  /api/v1/teams/{teamId}/roster:
+    get:
+      summary: Get team roster
+      tags: [Data]
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: sport
+          in: query
+          schema:
+            type: string
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, csv, xlsx]
+      responses:
+        '200':
+          description: Team roster data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  teamId:
+                    type: string
+                  sport:
+                    type: string
+                  roster:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Player'
+
+  /api/v1/teams/{teamId}/schedule:
+    get:
+      summary: Get team schedule
+      tags: [Data]
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: sport
+          in: query
+          schema:
+            type: string
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, csv, xlsx]
+      responses:
+        '200':
+          description: Team schedule data
+
+  /api/v1/teams/{teamId}/stats:
+    get:
+      summary: Get team statistics
+      tags: [Data]
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: sport
+          in: query
+          schema:
+            type: string
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, csv, xlsx]
+      responses:
+        '200':
+          description: Team statistics data
+
+  /api/v1/conferences/{conference}/roster:
+    get:
+      summary: Get conference-wide roster data
+      tags: [Data]
+      parameters:
+        - name: conference
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: sport
+          in: query
+          schema:
+            type: string
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, csv, xlsx]
+      responses:
+        '200':
+          description: Conference roster data
+
+  /api/v1/docs:
+    get:
+      summary: Interactive API documentation
+      description: HTML page with interactive API documentation
+      tags: [System]
+      responses:
+        '200':
+          description: HTML documentation page
+
+  # ==================== INTERNAL API ====================
+  /api/teams:
+    get:
+      summary: List teams (internal)
+      tags: [Teams]
+      parameters:
+        - name: league
+          in: query
+          schema:
+            type: string
+        - name: conference
+          in: query
+          schema:
+            type: string
+        - name: active
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Team list
+    post:
+      summary: Create a new team
+      tags: [Teams]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeamInput'
+      responses:
+        '201':
+          description: Team created
+        '400':
+          description: Validation error
+
+  /api/teams/{teamId}:
+    get:
+      summary: Get team by ID
+      tags: [Teams]
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Team details
+        '404':
+          description: Team not found
+    put:
+      summary: Update team
+      tags: [Teams]
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeamInput'
+      responses:
+        '200':
+          description: Team updated
+    delete:
+      summary: Delete team
+      tags: [Teams]
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Team deleted
+
+  /api/fetch/{moduleId}:
+    post:
+      summary: Fetch data using a specific module
+      tags: [Fetch]
+      parameters:
+        - name: moduleId
+          in: path
+          required: true
+          schema:
+            type: string
+            enum:
+              - ncaa-football-roster
+              - ncaa-football-schedule
+              - ncaa-football-stats
+              - ncaa-basketball-roster
+              - ncaa-basketball-schedule
+              - ncaa-basketball-stats
+              - ncaa-mens-basketball-schedule
+              - ncaa-womens-basketball-schedule
+              - nba-schedule
+              - nba-boxscore
+              - mlb-roster
+              - espn-tv
+              - cfb-tv
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - teamId
+              properties:
+                teamId:
+                  type: string
+                season:
+                  type: integer
+                targetDate:
+                  type: string
+                  format: date
+                createBaseline:
+                  type: boolean
+                forceRefresh:
+                  type: boolean
+      responses:
+        '200':
+          description: Fetch completed
+        '400':
+          description: Validation error
+
+  /api/comparison/run:
+    post:
+      summary: Run a data comparison
+      tags: [Comparison]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - teamId
+                - moduleId
+              properties:
+                teamId:
+                  type: string
+                moduleId:
+                  type: string
+                source:
+                  type: string
+                  enum: [baseline, oracle, api]
+                season:
+                  type: integer
+      responses:
+        '200':
+          description: Comparison result
+
+  /api/search:
+    get:
+      summary: Global search
+      tags: [Search]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 2
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [teams, players, schedule]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  totalResults:
+                    type: integer
+                  teams:
+                    type: array
+                    items:
+                      type: object
+                  players:
+                    type: array
+                    items:
+                      type: object
+                  schedule:
+                    type: array
+                    items:
+                      type: object
+
+  /api/settings:
+    get:
+      summary: Get application settings
+      tags: [Settings]
+      responses:
+        '200':
+          description: Current settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppSettings'
+    put:
+      summary: Update application settings
+      tags: [Settings]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppSettings'
+      responses:
+        '200':
+          description: Settings updated
+
+  /api/settings/reset:
+    post:
+      summary: Reset settings to defaults
+      tags: [Settings]
+      responses:
+        '200':
+          description: Settings reset
+
+  /api/nba/schedule:
+    get:
+      summary: Get NBA schedule
+      tags: [NBA]
+      parameters:
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: NBA schedule data
+
+  /api/nba/games/{gameId}:
+    get:
+      summary: Get NBA game details
+      tags: [NBA]
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Game details
+
+  /api/nba/games/{gameId}/boxscore:
+    get:
+      summary: Get NBA game boxscore
+      tags: [NBA]
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Game boxscore
+
+  /api/nba/games/{gameId}/playbyplay:
+    get:
+      summary: Get NBA play-by-play
+      tags: [NBA]
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Play-by-play data
+
+  /api/system/health:
+    get:
+      summary: Detailed health check (internal only)
+      tags: [System]
+      responses:
+        '200':
+          description: System health details
+
+  /api/system/stats:
+    get:
+      summary: Database statistics (internal only)
+      tags: [System]
+      responses:
+        '200':
+          description: Database stats
+
+  /api/system/connections:
+    get:
+      summary: Connection status (internal only)
+      tags: [System]
+      responses:
+        '200':
+          description: Connection details
+
+components:
+  schemas:
+    Team:
+      type: object
+      properties:
+        teamId:
+          type: string
+        teamName:
+          type: string
+        teamNickname:
+          type: string
+        teamAbbrev:
+          type: string
+        league:
+          type: string
+          enum: [NCAA, NFL, NBA, NHL, MLB, MILB]
+        conference:
+          type: string
+        division:
+          type: string
+        baseUrl:
+          type: string
+          format: uri
+        scrapeType:
+          type: string
+          enum: [sidearm, presto, custom, mlb, unknown]
+        active:
+          type: boolean
+
+    TeamInput:
+      type: object
+      required:
+        - teamId
+        - teamName
+        - league
+        - baseUrl
+      properties:
+        teamId:
+          type: string
+        teamName:
+          type: string
+        teamNickname:
+          type: string
+        teamAbbrev:
+          type: string
+        league:
+          type: string
+        conference:
+          type: string
+        baseUrl:
+          type: string
+          format: uri
+        scrapeType:
+          type: string
+        active:
+          type: boolean
+
+    Player:
+      type: object
+      properties:
+        name:
+          type: string
+        number:
+          type: string
+        position:
+          type: string
+        height:
+          type: string
+        weight:
+          type: string
+        year:
+          type: string
+        hometown:
+          type: string
+
+    AppSettings:
+      type: object
+      properties:
+        requestTimeout:
+          type: integer
+          description: Request timeout in seconds
+          default: 30
+        maxRetryAttempts:
+          type: integer
+          description: Max retry attempts for failed requests
+          default: 3
+        autoRefreshInterval:
+          type: integer
+          description: Auto-refresh interval in minutes (0 = disabled)
+          default: 60
+        dataRetentionPeriod:
+          type: integer
+          description: Data retention period in days
+          default: 30
+
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
