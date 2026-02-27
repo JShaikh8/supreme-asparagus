@@ -1462,10 +1462,10 @@ class OracleService {
       const conn = await this.connect();
       const MLB_LEAGUE_ID = 7;
 
-      // Default date range for MLB season (March - November)
+      // Default date range for MLB season (February - November, includes Spring Training)
       // Derive year from seasonId (e.g., 202507 -> 2025) rather than current year
       const seasonYear = Math.floor(seasonId / 100);
-      const seasonStart = `${seasonYear}-03-01`;
+      const seasonStart = `${seasonYear}-02-01`;
       const seasonEnd = `${seasonYear}-11-30`;
       // Only use provided startDate if it falls within the season range,
       // otherwise it creates an inverted date range (e.g., today 2026 vs season end 2025)
@@ -1569,6 +1569,23 @@ class OracleService {
 
       console.log(`[MLB ORACLE] Filtered to team ${teamId}: ${teamRows.length} games`);
 
+      // Compute actual game numbers for multi-game dates (doubleheaders/split squads)
+      // NUMBER_OF_GAMES is the total count, not the game's position - we need to derive position
+      const gamesByDate = {};
+      teamRows.forEach(r => {
+        const date = r.GAME_DATE;
+        if (!gamesByDate[date]) gamesByDate[date] = [];
+        gamesByDate[date].push(r);
+      });
+      for (const date of Object.keys(gamesByDate)) {
+        const games = gamesByDate[date];
+        games.sort((a, b) => String(a.GAME_CODE).localeCompare(String(b.GAME_CODE)));
+        games.forEach((r, idx) => {
+          r._gameNumber = games.length > 1 ? idx + 1 : 1;
+          r._totalGamesOnDate = games.length;
+        });
+      }
+
       // If no team games found, throw descriptive error with sample IDs
       if (teamRows.length === 0 && result.rows.length > 0) {
         const sampleIds = new Set();
@@ -1637,10 +1654,10 @@ class OracleService {
           makeUpDate: makeup,
           venue: r.PARK_NAME,
           venueId: r.PARK_ID,
-          dayNight: r.DAY_OR_NIGHT,
+          dayNight: r.DAY_OR_NIGHT === 'D' ? 'Day' : r.DAY_OR_NIGHT === 'N' ? 'Night' : r.DAY_OR_NIGHT,
           gameType: r.GAME_TYPE_NAME,
-          gameNumber: r.NUMBER_OF_GAMES,
-          doubleHeader: r.NUMBER_OF_GAMES > 1,
+          gameNumber: r._gameNumber || 1,
+          doubleHeader: (r._totalGamesOnDate || 1) > 1,
           neutralSite: r.NEUTRAL_SITE === 'Y',
           tbaFlag: r.TBA_FLAG === 'Y',
           // TV broadcasts
@@ -1654,6 +1671,9 @@ class OracleService {
           opponent: isHome
             ? `${r.AWAY_TEAM_NAME || ''} ${r.AWAY_TEAM_NICKNAME || ''}`.trim()
             : `${r.HOME_TEAM_NAME || ''} ${r.HOME_TEAM_NICKNAME || ''}`.trim(),
+          opponentNickname: isHome
+            ? (r.AWAY_TEAM_NICKNAME || '').trim()
+            : (r.HOME_TEAM_NICKNAME || '').trim(),
           opponentId: isHome ? r.AWAY_TEAM_ID : r.HOME_TEAM_ID,
           opponentAbbrev: isHome ? r.AWAY_TEAM_ABBREV : r.HOME_TEAM_ABBREV,
           // Full team data
@@ -1786,6 +1806,22 @@ class OracleService {
         return [];
       }
 
+      // Compute actual game numbers for multi-game dates (doubleheaders/split squads)
+      const gamesByDate = {};
+      result.rows.forEach(r => {
+        const date = r.GAME_DATE;
+        if (!gamesByDate[date]) gamesByDate[date] = [];
+        gamesByDate[date].push(r);
+      });
+      for (const date of Object.keys(gamesByDate)) {
+        const games = gamesByDate[date];
+        games.sort((a, b) => String(a.GAME_CODE).localeCompare(String(b.GAME_CODE)));
+        games.forEach((r, idx) => {
+          r._gameNumber = games.length > 1 ? idx + 1 : 1;
+          r._totalGamesOnDate = games.length;
+        });
+      }
+
       return result.rows.map(r => {
         // Parse game time to h:mm am/pm CT format
         let gameTimeFormatted = null;
@@ -1819,10 +1855,10 @@ class OracleService {
           statusCode: r.STATUS,
           venue: r.PARK_NAME,
           venueId: r.PARK_ID,
-          dayNight: r.DAY_OR_NIGHT,
+          dayNight: r.DAY_OR_NIGHT === 'D' ? 'Day' : r.DAY_OR_NIGHT === 'N' ? 'Night' : r.DAY_OR_NIGHT,
           gameType: r.GAME_TYPE_NAME,
-          gameNumber: r.NUMBER_OF_GAMES,
-          doubleHeader: r.NUMBER_OF_GAMES > 1,
+          gameNumber: r._gameNumber || 1,
+          doubleHeader: (r._totalGamesOnDate || 1) > 1,
           neutralSite: r.NEUTRAL_SITE === 'Y',
           tbaFlag: r.TBA_FLAG === 'Y',
           // TV broadcasts

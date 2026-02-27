@@ -57,7 +57,8 @@
       "renderer/**/*",
       "utils/**/*",
       "backend/**/*",
-      "!backend/node_modules"
+      "!backend/node_modules",
+      "!backend/.env"
     ],
     "extraResources": [
       {
@@ -66,6 +67,14 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": ".env",
+        "to": "env/.env"
+      },
+      {
+        "from": "backend/.env",
+        "to": "env/backend.env"
       }
     ],
     "asar": true,

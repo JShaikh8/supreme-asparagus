@@ -4,18 +4,18 @@
 module.exports = {
   // MongoDB Connection (hardcoded - shared by all users)
   mongodb: {
-    uri: process.env.MONGODB_URI || 'mongodb+srv://your_username:your_password@your-cluster.mongodb.net/sports-data?retryWrites=true&w=majority'
+    uri: process.env.MONGODB_URI || 'mongodb+srv://jalalbuilds_db_user:ETqJ5LcP9rALQAJT@matas-cluster.hnzyfsu.mongodb.net/sports-data?retryWrites=true&w=majority&appName=matas-cluster'
   },
 
   // Oracle Database Connection (pre-filled, users only enter username/password)
   oracle: {
-    connectString: process.env.ORACLE_CONNECT_STRING || 'your_oracle_host:1521/your_service_name'
+    connectString: process.env.ORACLE_CONNECT_STRING || 'exadata2-cluster.stats.com:1521/bladerac_usr.stats.com'
     // Username and password provided by user at login
   },
 
   // Stats API Configuration (internal VPN-required API - no key needed)
   statsApi: {
-    baseUrl: process.env.STATS_API_URL || 'https://your_stats_api_url/v1/stats'
+    baseUrl: process.env.STATS_API_URL || 'https://prod.origin.api.stats.com'
     // No API key required - works when user is on VPN
   },
 

@@ -12467,3 +12467,49 @@ body.modal-open {
 .tv-mapping-inline.success .tv-mapping-row {
   gap: 0.5rem;
 }
+
+/* TV Mapping Scope Selector */
+.tv-scope-selector {
+  display: flex;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.tv-scope-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  border: 1px solid #555;
+  background: transparent;
+  color: #ccc;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.tv-scope-btn:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.tv-scope-btn:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.tv-scope-btn:not(:first-child) {
+  border-left: none;
+}
+
+.tv-scope-btn:hover {
+  background: rgba(74, 144, 217, 0.2);
+  border-color: #4a90d9;
+  color: #fff;
+}
+
+.tv-scope-btn.active {
+  background: #4a90d9;
+  color: #fff;
+  border-color: #4a90d9;
+}
+
+.tv-scope-btn.active + .tv-scope-btn {
+  border-left-color: #4a90d9;
+}

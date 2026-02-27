@@ -2,6 +2,8 @@
 const express = require('express');
 const router = express.Router();
 const ScrapedData = require('../models/ScrapedData');
+const Team = require('../models/Team');
+const oracleService = require('../services/oracleService');
 const logger = require('../utils/logger');
 
 // Get scraped data with filters
@@ -45,6 +47,45 @@ router.get('/scraped', async (req, res) => {
     res.json(data);
   } catch (error) {
     logger.error('Error fetching scraped data:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get Oracle MLB schedule data for a team (view-only, no comparison)
+router.get('/oracle-schedule', async (req, res) => {
+  try {
+    if (process.env.ENABLE_INTERNAL_FEATURES !== 'true') {
+      return res.status(403).json({ error: 'Oracle access requires internal features mode' });
+    }
+
+    const { teamId, season } = req.query;
+    if (!teamId) return res.status(400).json({ error: 'teamId is required' });
+
+    const team = await Team.findOne({ teamId });
+    if (!team) return res.status(404).json({ error: 'Team not found' });
+
+    const oracleTeamId = team.statsId;
+    if (!oracleTeamId) return res.status(404).json({ error: 'Team has no statsId configured for Oracle' });
+
+    const seasonYear = season || new Date().getFullYear();
+    const seasonId = parseInt(`${seasonYear}07`);
+
+    const games = await oracleService.getMLBSchedule(oracleTeamId, seasonId);
+
+    // Wrap each game in { data: game } format to match ScheduleDataView expectations
+    const wrapped = games.map(game => ({
+      data: {
+        ...game,
+        gameTypeName: game.gameType // ScheduleDataView reads gameTypeName, Oracle returns gameType
+      },
+      teamId,
+      moduleId: 'mlb_schedule',
+      source: 'oracle'
+    }));
+
+    res.json(wrapped);
+  } catch (error) {
+    logger.error('Error fetching Oracle schedule:', error);
     res.status(500).json({ error: error.message });
   }
 });

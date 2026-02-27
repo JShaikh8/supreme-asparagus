@@ -1089,34 +1089,121 @@ async function performScheduleComparison(scrapedGames, sourceGames, sport, teamI
     _id: item._id
   }));
 
-  // Create maps by date
+  // Create maps by date - store arrays to handle doubleheaders/split squads
   // Prefer gameDate (CST-corrected) over date (UTC) for proper timezone handling
   const scrapedByDate = new Map();
   scrapedData.forEach(game => {
     const date = normalizeDate(game.gameDate || game.date);
-    scrapedByDate.set(date, game);
+    if (!scrapedByDate.has(date)) scrapedByDate.set(date, []);
+    scrapedByDate.get(date).push(game);
   });
 
   const sourceByDate = new Map();
   sourceGames.forEach(game => {
     const date = normalizeDate(game.gameDate || game.date);
-    sourceByDate.set(date, game);
+    if (!sourceByDate.has(date)) sourceByDate.set(date, []);
+    sourceByDate.get(date).push(game);
   });
 
-  logger.debug(`Scraped games by date: ${scrapedByDate.size}, Source games by date: ${sourceByDate.size}`);
+  const scrapedGameCount = [...scrapedByDate.values()].reduce((sum, arr) => sum + arr.length, 0);
+  const sourceGameCount = [...sourceByDate.values()].reduce((sum, arr) => sum + arr.length, 0);
+  logger.debug(`Scraped games: ${scrapedGameCount} across ${scrapedByDate.size} dates, Source games: ${sourceGameCount} across ${sourceByDate.size} dates`);
 
-  // Track matched games
-  const matchedScrapedDates = new Set();
-  const matchedSourceDates = new Set();
+  // Track matched games by unique identifier (date_index)
+  const matchedScrapedIds = new Set();
+  const matchedSourceIds = new Set();
 
-  // Match games by date
-  for (const [date, scrapedGame] of scrapedByDate.entries()) {
-    const sourceGame = sourceByDate.get(date);
+  // Match games by date, then by opponent within the same date
+  for (const [date, scrapedGamesOnDate] of scrapedByDate.entries()) {
+    const sourceGamesOnDate = sourceByDate.get(date);
+    if (!sourceGamesOnDate) continue;
+
+    if (scrapedGamesOnDate.length > 1 || sourceGamesOnDate.length > 1) {
+      logger.debug(`Multi-game date ${date}: ${scrapedGamesOnDate.length} scraped, ${sourceGamesOnDate.length} source`);
+      scrapedGamesOnDate.forEach((g, i) => logger.debug(`  Scraped[${i}]: vs ${g.opponentName || g.opponent}, gameNum=${g.gameNumber}, splitSquad=${g.splitSquad || false}`));
+      sourceGamesOnDate.forEach((g, i) => logger.debug(`  Source[${i}]: vs ${g.opponentName || g.opponent}, gameNum=${g.gameNumber}`));
+    }
+
+    // For each scraped game, find the best matching source game by opponent
+    const usedSourceIndices = new Set();
+
+    for (let si = 0; si < scrapedGamesOnDate.length; si++) {
+      const scrapedGame = scrapedGamesOnDate[si];
+      const scrapedOpponent = normalizeTeamName(scrapedGame.opponentName || scrapedGame.opponent);
+
+      let bestMatch = null;
+      let bestMatchIdx = -1;
+
+      for (let oi = 0; oi < sourceGamesOnDate.length; oi++) {
+        if (usedSourceIndices.has(oi)) continue;
+        const sourceGame = sourceGamesOnDate[oi];
+        const sourceOpponent = normalizeTeamName(sourceGame.opponentName || sourceGame.opponent);
+
+        // Match by opponent name (or gameNumber for same-opponent doubleheaders)
+        if (scrapedOpponent === sourceOpponent) {
+          // If multiple games vs same opponent (doubleheader), match by gameNumber
+          if (bestMatch !== null) {
+            if (scrapedGame.gameNumber && sourceGame.gameNumber &&
+                scrapedGame.gameNumber === sourceGame.gameNumber) {
+              bestMatch = sourceGame;
+              bestMatchIdx = oi;
+            }
+          } else {
+            bestMatch = sourceGame;
+            bestMatchIdx = oi;
+          }
+        }
+      }
+
+      // Fallback: try matching by opponentNickname (handles "Minnesota Twins" vs "Twins")
+      if (!bestMatch) {
+        const scrapedNickname = normalizeTeamName(scrapedGame.opponentNickname);
+        for (let oi = 0; oi < sourceGamesOnDate.length; oi++) {
+          if (usedSourceIndices.has(oi)) continue;
+          const sourceGame = sourceGamesOnDate[oi];
+          const sourceNickname = normalizeTeamName(sourceGame.opponentNickname);
+          const sourceOpponent = normalizeTeamName(sourceGame.opponentName || sourceGame.opponent);
+
+          // Check if nickname matches opponent name or nickname on the other side
+          if ((scrapedNickname && sourceNickname && scrapedNickname === sourceNickname) ||
+              (scrapedNickname && scrapedNickname === sourceOpponent) ||
+              (scrapedOpponent && sourceNickname && scrapedOpponent === sourceNickname)) {
+            bestMatch = sourceGame;
+            bestMatchIdx = oi;
+            break;
+          }
+        }
+      }
+
+      // Fallback: try matching by opponentId (handles name format differences)
+      if (!bestMatch) {
+        const scrapedOppId = scrapedGame.opponentId ? String(scrapedGame.opponentId) : null;
+        if (scrapedOppId) {
+          for (let oi = 0; oi < sourceGamesOnDate.length; oi++) {
+            if (usedSourceIndices.has(oi)) continue;
+            const sourceOppId = sourceGamesOnDate[oi].opponentId ? String(sourceGamesOnDate[oi].opponentId) : null;
+            if (sourceOppId && scrapedOppId === sourceOppId) {
+              bestMatch = sourceGamesOnDate[oi];
+              bestMatchIdx = oi;
+              break;
+            }
+          }
+        }
+      }
+
+      // If no opponent match found and only one game each on this date, match by date
+      if (!bestMatch && scrapedGamesOnDate.length === 1 && sourceGamesOnDate.length === 1 && usedSourceIndices.size === 0) {
+        bestMatch = sourceGamesOnDate[0];
+        bestMatchIdx = 0;
+      }
+
+      if (bestMatch) {
+        usedSourceIndices.add(bestMatchIdx);
+        matchedScrapedIds.add(`${date}_${si}`);
+        matchedSourceIds.add(`${date}_${bestMatchIdx}`);
+        const sourceGame = bestMatch;
 
     if (sourceGame) {
-      matchedScrapedDates.add(date);
-      matchedSourceDates.add(date);
-
       // Compare game details
       const gameDiscrepancies = [];
       const mappedFields = {}; // Track which fields were resolved by mappings
@@ -1404,25 +1491,38 @@ async function performScheduleComparison(scrapedGames, sourceGames, sport, teamI
           mappedFields // Include which fields were resolved by mappings
         });
       }
+    } // end if (sourceGame)
+      } // end if (bestMatch)
+    } // end for scrapedGamesOnDate
+
+    // Unmatched source games on this date
+    for (let oi = 0; oi < sourceGamesOnDate.length; oi++) {
+      if (!usedSourceIndices.has(oi)) {
+        comparison.missingInScraped.push({
+          date,
+          game: sourceGamesOnDate[oi]
+        });
+      }
+    }
+  } // end for scrapedByDate
+
+  // Find unmatched scraped games
+  for (const [date, scrapedGamesOnDate] of scrapedByDate.entries()) {
+    for (let si = 0; si < scrapedGamesOnDate.length; si++) {
+      if (!matchedScrapedIds.has(`${date}_${si}`)) {
+        comparison.missingInSource.push({
+          date,
+          game: scrapedGamesOnDate[si]
+        });
+      }
     }
   }
 
-  // Find games in source but not in scraped
-  for (const [date, sourceGame] of sourceByDate.entries()) {
-    if (!matchedSourceDates.has(date)) {
-      comparison.missingInScraped.push({
-        date,
-        game: sourceGame
-      });
-    }
-  }
-
-  // Find games in scraped but not in source
-  for (const [date, scrapedGame] of scrapedByDate.entries()) {
-    if (!matchedScrapedDates.has(date)) {
-      comparison.missingInSource.push({
-        date,
-        game: scrapedGame
+  // Find source dates with no scraped games at all
+  for (const [date, sourceGamesOnDate] of sourceByDate.entries()) {
+    if (!scrapedByDate.has(date)) {
+      sourceGamesOnDate.forEach(game => {
+        comparison.missingInScraped.push({ date, game });
       });
     }
   }

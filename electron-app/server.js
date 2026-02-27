@@ -6,10 +6,9 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
-const config = require('./config');
 
-// Load environment variables from backend/.env (copied by copy-backend.js)
-require('dotenv').config({ path: path.join(__dirname, 'backend', '.env') });
+// Environment variables are loaded by main.js before this module is required
+const config = require('./config');
 
 // IMPORTANT: Set mongoose options BEFORE any models are loaded
 mongoose.set('bufferCommands', false);

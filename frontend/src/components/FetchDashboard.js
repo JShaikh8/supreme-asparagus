@@ -439,6 +439,40 @@ function FetchDashboard({ teams }) {
     }
   };
 
+  // Load Oracle MLB schedule data
+  const handleLoadOracle = async () => {
+    if (!selectedTeam || !selectedModule) {
+      await showAlert('Please select both a team and a module', 'Notice', 'info');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setViewMode('table');
+    setAllRostersMode(false);
+    setAllRostersStats(null);
+
+    try {
+      const response = await axios.get('/data/oracle-schedule', {
+        params: {
+          teamId: selectedTeam,
+          season: selectedSeason
+        }
+      });
+
+      setFetchedData(response.data);
+
+      if (response.data.length === 0) {
+        await showAlert('No Oracle schedule data found for this team/season', 'Notice', 'info');
+      }
+    } catch (err) {
+      const errorMsg = err.response?.data?.error || err.message;
+      setError(errorMsg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Load all MLB rosters (deduped by player ID)
   const [allRostersMode, setAllRostersMode] = useState(false);
   const [allRostersStats, setAllRostersStats] = useState(null);
@@ -1050,6 +1084,32 @@ function FetchDashboard({ teams }) {
                 </>
               )}
             </button>
+
+            {/* Load Oracle Schedule - only for MLB schedule module */}
+            {selectedModule === 'mlb_schedule' && (
+              <button
+                className="btn-secondary"
+                onClick={handleLoadOracle}
+                disabled={loading || !selectedTeam}
+                style={{
+                  backgroundColor: '#fff3e0',
+                  borderColor: '#e65100',
+                  color: '#e65100'
+                }}
+              >
+                {loading ? (
+                  <>
+                    <Loader2 size={16} className="spinner" />
+                    Loading Oracle...
+                  </>
+                ) : (
+                  <>
+                    <Download size={16} />
+                    Load Oracle
+                  </>
+                )}
+              </button>
+            )}
 
             {/* Load All MLB Rosters - special button for MLB league */}
             {(singleFetchLeague === 'MLB' || singleFetchLeague === 'MILB') && (

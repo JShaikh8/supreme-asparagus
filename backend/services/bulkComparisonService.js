@@ -230,10 +230,17 @@ class BulkComparisonService {
               },
               summary: {
                 totalRecords: comparisonData.comparison.totalScraped,
+                totalScraped: comparisonData.comparison.totalScraped || 0,
+                totalSource: comparisonData.comparison.totalSource || 0,
+                matchPercentage: parseFloat(comparisonData.comparison.matchPercentage) || 0,
+                perfectMatches: comparisonData.comparison.summary?.perfectMatches || 0,
+                matchesWithDiscrepancies: comparisonData.comparison.summary?.matchesWithDiscrepancies || comparisonData.comparison.discrepancies?.length || 0,
                 matchedRecords: comparisonData.comparison.matches.length,
                 differences: comparisonData.comparison.discrepancies.length,
                 missingInOracle: comparisonData.comparison.missingInSource.length,
                 missingInWeb: comparisonData.comparison.missingInScraped.length,
+                missingInScraped: comparisonData.comparison.summary?.uniqueToSource || comparisonData.comparison.missingInScraped?.length || 0,
+                missingInSource: comparisonData.comparison.summary?.uniqueToScraped || comparisonData.comparison.missingInSource?.length || 0,
                 mappingsApplied: Object.keys(comparisonData.comparison.mappedFields || {}).length,
                 duration: new Date() - startTime
               },
@@ -345,7 +352,7 @@ class BulkComparisonService {
 
     if (isScheduleModule) {
       // For schedule modules, run schedule comparison
-      return await this.runScheduleComparison(team, moduleId, source, season, targetDate);
+      return await this.runScheduleComparison(team, moduleId, source, season, targetDate, endDate);
     }
 
     // For roster modules, continue with existing logic
@@ -433,7 +440,7 @@ class BulkComparisonService {
   }
 
   // Run schedule comparison
-  async runScheduleComparison(team, moduleId, source, season, startDate = null) {
+  async runScheduleComparison(team, moduleId, source, season, startDate = null, endDate = null) {
     logger.debug(`[${team.teamId}] Running schedule comparison with startDate: ${startDate || 'ALL GAMES'}`);
 
     // Get scraped schedule data from MongoDB
@@ -452,6 +459,18 @@ class BulkComparisonService {
         return itemDate >= filterDate;
       });
       logger.debug(`[${team.teamId}] Filtered scraped games by date >= ${startDate}: ${scrapedData.length} games remaining`);
+    }
+
+    // Filter scraped data by endDate if provided
+    if (endDate) {
+      const filterEndDate = new Date(endDate);
+      scrapedData = scrapedData.filter(item => {
+        const gameDate = item.data?.date || item.data?.gameDate;
+        if (!gameDate) return true;
+        const itemDate = new Date(gameDate.split('T')[0]);
+        return itemDate <= filterEndDate;
+      });
+      logger.debug(`[${team.teamId}] Filtered scraped games by date <= ${endDate}: ${scrapedData.length} games remaining`);
     }
 
     // Get ignored games list (don't filter, pass to comparison)
@@ -502,7 +521,7 @@ class BulkComparisonService {
       }
 
       if (sport === 'mlb') {
-        sourceData = await oracleService.getMLBSchedule(oracleTeamId, parseInt(seasonId), startDate);
+        sourceData = await oracleService.getMLBSchedule(oracleTeamId, parseInt(seasonId), startDate, endDate);
       } else if (sport === 'nba') {
         sourceData = await oracleService.getNBASchedule(oracleTeamId, parseInt(seasonId), startDate);
         // Transform NBA Oracle data to add opponent and H/A indicator
@@ -1561,7 +1580,8 @@ class BulkComparisonService {
           teamId,
           type: 'missing_in_web',
           oracleValue: item.game,
-          webValue: null
+          webValue: null,
+          isIgnored: item.isIgnored || false
         });
       });
 
@@ -1571,7 +1591,8 @@ class BulkComparisonService {
           teamId,
           type: 'missing_in_oracle',
           oracleValue: null,
-          webValue: item.game
+          webValue: item.game,
+          isIgnored: item.isIgnored || false
         });
       });
 

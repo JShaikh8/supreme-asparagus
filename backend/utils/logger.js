@@ -44,7 +44,9 @@ const transports = [
 
 // Add file transports in production or if LOG_TO_FILE is set
 if (process.env.NODE_ENV === 'production' || process.env.LOG_TO_FILE === 'true') {
-  const logsDir = process.env.LOG_DIR || path.join(__dirname, '..', 'logs');
+  // Use LOG_DIR env var, or fallback to a writable location
+  // (path.join(__dirname, '..', 'logs') fails inside Electron's asar archive)
+  const logsDir = process.env.LOG_DIR || path.join(process.env.APPDATA || process.env.HOME || __dirname, 'sportsdata-pro-desktop', 'logs');
 
   transports.push(
     // Error log file

@@ -26,7 +26,7 @@ const getDefaultSeason = () => {
 // Compare scraped data with oracle/api
 router.post('/compare', validateComparison, async (req, res) => {
   try {
-    const { teamId, moduleId, source = 'api', season, startDate } = req.body;
+    const { teamId, moduleId, source = 'api', season, startDate, endDate } = req.body;
 
     // Security check: Block oracle/api comparisons if internal features disabled
     const enableInternalFeatures = process.env.ENABLE_INTERNAL_FEATURES === 'true';
@@ -100,6 +100,18 @@ router.post('/compare', validateComparison, async (req, res) => {
         logger.debug(`Filtered scraped games by date >= ${startDate}: ${scrapedData.length} games remaining`);
       }
 
+      // Filter scraped data by endDate if provided
+      if (endDate) {
+        const filterEndDate = new Date(endDate);
+        scrapedData = scrapedData.filter(item => {
+          const gameDate = item.data?.date || item.data?.gameDate;
+          if (!gameDate) return true;
+          const itemDate = new Date(gameDate.split('T')[0]);
+          return itemDate <= filterEndDate;
+        });
+        logger.debug(`Filtered scraped games by date <= ${endDate}: ${scrapedData.length} games remaining`);
+      }
+
       if (source === 'oracle') {
         // Get Oracle team_id from stored config
         let oracleTeamId;
@@ -141,8 +153,8 @@ router.post('/compare', validateComparison, async (req, res) => {
 
         if (sport === 'mlb') {
           // MLB schedule
-          console.log(`[MLB COMPARE] oracleTeamId=${oracleTeamId}, seasonId=${seasonId}, startDate=${startDate}, season=${season}`);
-          sourceData = await oracleService.getMLBSchedule(oracleTeamId, parseInt(seasonId), startDate);
+          console.log(`[MLB COMPARE] oracleTeamId=${oracleTeamId}, seasonId=${seasonId}, startDate=${startDate}, endDate=${endDate}, season=${season}`);
+          sourceData = await oracleService.getMLBSchedule(oracleTeamId, parseInt(seasonId), startDate, endDate);
           console.log(`[MLB COMPARE] Oracle returned ${sourceData.length} games`);
         } else if (sport === 'nba') {
           // NBA uses season 202501

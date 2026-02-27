@@ -138,6 +138,7 @@ class MLBScheduleModule {
             const parts = name.split('/').map(p => p.trim()).filter(p => p);
             parts.forEach(part => allBroadcasters.push(part));
           } else {
+            // Keep callSigns as-is (e.g., "FOX9+KMSP" is one station identifier)
             allBroadcasters.push(name.trim());
           }
         }
@@ -294,6 +295,7 @@ class MLBScheduleModule {
       doubleHeader: game.doubleHeader === 'Y' || game.doubleHeader === 'S',
       doubleHeaderType: game.doubleHeader === 'S' ? 'Split' : game.doubleHeader === 'Y' ? 'Traditional' : null,
       gameNumber: game.gameNumber || 1,
+      splitSquad: isHomeTeam ? (game.teams?.home?.splitSquad || false) : (game.teams?.away?.splitSquad || false),
       scheduledInnings: game.scheduledInnings || 9,
       seriesDescription: game.seriesDescription || null,
       // Probable pitchers

@@ -2303,7 +2303,6 @@ function SideBySideView({ scrapedData, sourceData, source, comparisonResult, isS
 
     // Build aligned schedule data similar to roster
     const allGames = [];
-    const processedDates = new Set();
 
     // Add matched games
     if (comparisonResult?.matches) {
@@ -2312,27 +2311,23 @@ function SideBySideView({ scrapedData, sourceData, source, comparisonResult, isS
           date: match.date,
           scraped: match.scraped,
           source: match.source,
-          mappedFields: match.mappedFields || {}, // Track which fields are mapped
+          mappedFields: match.mappedFields || {},
           status: 'matched'
         });
-        processedDates.add(match.date);
       });
     }
 
     // Add games with discrepancies
     if (comparisonResult?.discrepancies) {
       comparisonResult.discrepancies.forEach(item => {
-        if (!processedDates.has(item.date)) {
-          allGames.push({
-            date: item.date,
-            scraped: item.scraped,
-            source: item.source,
-            status: 'discrepancy',
-            discrepancies: item.discrepancies,
-            mappedFields: item.mappedFields || {} // Track which fields are mapped
-          });
-          processedDates.add(item.date);
-        }
+        allGames.push({
+          date: item.date,
+          scraped: item.scraped,
+          source: item.source,
+          status: 'discrepancy',
+          discrepancies: item.discrepancies,
+          mappedFields: item.mappedFields || {}
+        });
       });
     }
 
@@ -2471,11 +2466,11 @@ function SideBySideView({ scrapedData, sourceData, source, comparisonResult, isS
                   <tr>
                     <th style={{ width: isMLB ? '7%' : '9%' }}>Date</th>
                     <th style={{ width: '6%' }}>Time</th>
-                    <th style={{ width: isMLB ? '20%' : '15%' }}>Opponent</th>
+                    <th style={{ width: isMLB ? '18%' : '15%' }}>Opponent</th>
                     {isESPN && <th style={{ width: '10%' }}>Nickname</th>}
-                    {!isMLB && <th style={{ width: '5%' }}>Loc</th>}
+                    <th style={{ width: '5%' }}>Loc</th>
                     {!isMLB && <th style={{ width: '5%' }}>H/A</th>}
-                    <th style={{ width: isESPN ? '14%' : isMLB ? '22%' : '17%' }}>Venue</th>
+                    <th style={{ width: isESPN ? '14%' : isMLB ? '20%' : '17%' }}>Venue</th>
                     {!isProSport && <th style={{ width: isESPN ? '11%' : '14%' }}>Location</th>}
                     <th style={{ width: isMLB ? '15%' : '10%' }}>TV</th>
                     {!isProSport && <th style={{ width: '8%' }}>Conf</th>}
@@ -2505,11 +2500,9 @@ function SideBySideView({ scrapedData, sourceData, source, comparisonResult, isS
                             <div className="cell-content">{scraped?.opponentNickname || '-'}</div>
                           </td>
                         )}
-                        {!isMLB && (
-                          <td className={getCellClass(scraped?.locationIndicator, source?.locationIndicator, 'locationIndicator', game.discrepancies, game.mappedFields)}>
-                            <div className="cell-content">{scraped?.locationIndicator || '-'}</div>
-                          </td>
-                        )}
+                        <td className={getCellClass(scraped?.locationIndicator, source?.locationIndicator, 'locationIndicator', game.discrepancies, game.mappedFields)}>
+                          <div className="cell-content">{scraped?.locationIndicator || '-'}</div>
+                        </td>
                         {!isMLB && (
                           <td className={scraped?.locationIndicator === 'N' ? getCellClass(
                             scraped?.neutralHometeam ? 'H' : 'A',
@@ -2561,11 +2554,11 @@ function SideBySideView({ scrapedData, sourceData, source, comparisonResult, isS
                   <tr>
                     <th style={{ width: isMLB ? '7%' : '9%' }}>Date</th>
                     <th style={{ width: '6%' }}>Time</th>
-                    <th style={{ width: isMLB ? '25%' : '12%' }}>Opponent</th>
+                    <th style={{ width: isMLB ? '23%' : '12%' }}>Opponent</th>
                     {!isMLB && <th style={{ width: '10%' }}>Nickname</th>}
-                    {!isMLB && <th style={{ width: '5%' }}>Loc</th>}
+                    <th style={{ width: '5%' }}>Loc</th>
                     {!isMLB && <th style={{ width: '5%' }}>H/A</th>}
-                    <th style={{ width: isMLB ? '22%' : '15%' }}>Venue</th>
+                    <th style={{ width: isMLB ? '20%' : '15%' }}>Venue</th>
                     {!isProSport && <th style={{ width: '13%' }}>Location</th>}
                     <th style={{ width: isMLB ? '15%' : '9%' }}>TV</th>
                     {!isProSport && <th style={{ width: '6%' }}>Conf</th>}
@@ -2590,11 +2583,9 @@ function SideBySideView({ scrapedData, sourceData, source, comparisonResult, isS
                             <div className="cell-content">{source?.opponentNickname || '-'}</div>
                           </td>
                         )}
-                        {!isMLB && (
-                          <td className={getCellClass(scraped?.locationIndicator, source?.locationIndicator, 'locationIndicator', game.discrepancies, game.mappedFields)}>
-                            <div className="cell-content">{source?.locationIndicator || '-'}</div>
-                          </td>
-                        )}
+                        <td className={getCellClass(scraped?.locationIndicator, source?.locationIndicator, 'locationIndicator', game.discrepancies, game.mappedFields)}>
+                          <div className="cell-content">{source?.locationIndicator || '-'}</div>
+                        </td>
                         {!isMLB && (
                           <td className={source?.locationIndicator === 'N' ? getCellClass(
                             scraped?.neutralHometeam ? 'H' : 'A',
@@ -2789,6 +2780,7 @@ function DiscrepanciesView({ comparison, team, source, isScheduleComparison, sou
   const [mappingData, setMappingData] = useState(null);
   const [tvMappingSelections, setTvMappingSelections] = useState({}); // Track TV mapping selections by oracle value
   const [savingTvMapping, setSavingTvMapping] = useState(null); // Track which TV mapping is being saved
+  const [tvMappingScope, setTvMappingScope] = useState('team'); // 'global', 'league', or 'team'
   const [savedTvMappings, setSavedTvMappings] = useState({}); // Track successfully saved mappings { oracleValue: scrapedValue }
 
   // Collect all unique scraped TV values for dropdown options
@@ -2964,12 +2956,27 @@ function DiscrepanciesView({ comparison, team, source, isScheduleComparison, sou
     }));
   };
 
+  // Build scope object based on selected scope level
+  const buildTvMappingScope = () => {
+    switch (tvMappingScope) {
+      case 'global':
+        return { level: 'global' };
+      case 'league':
+        return { level: 'league', league: team?.league || 'MLB' };
+      case 'team':
+      default:
+        return { level: 'team', teamId: team?.teamId, league: team?.league, sport: team?.sport };
+    }
+  };
+
   // Save a single TV mapping (equivalence or ignore)
   const handleSaveTvMapping = async (broadcasterKey) => {
     const selectedValue = tvMappingSelections[broadcasterKey];
     if (!selectedValue) return;
 
     const isIgnore = selectedValue === 'IGNORE';
+    const scope = buildTvMappingScope();
+    const scopeLabel = tvMappingScope === 'global' ? 'globally' : tvMappingScope === 'league' ? `for ${team?.league || 'MLB'}` : `for ${team?.teamName || 'this team'}`;
 
     setSavingTvMapping(broadcasterKey);
     try {
@@ -2977,36 +2984,30 @@ function DiscrepanciesView({ comparison, team, source, isScheduleComparison, sou
         await axios.post('/mappings/create', {
           mappingType: 'ignore',
           fieldType: 'tv',
-          scope: {
-            level: 'league',
-            league: team?.league || 'MLB'
-          },
+          scope,
           rules: {
             primaryValue: broadcasterKey,
             caseSensitive: false,
             ignoreReason: `Ignored TV broadcaster: ${broadcasterKey}`
           },
           appliesTo: { scraped: true, api: true, oracle: true },
-          notes: `TV broadcaster ignored: ${broadcasterKey}`
+          notes: `TV broadcaster ignored ${scopeLabel}: ${broadcasterKey}`
         });
-        toast.success(`Ignoring "${broadcasterKey}" in TV comparisons`);
+        toast.success(`Ignoring "${broadcasterKey}" ${scopeLabel}`);
       } else {
         await axios.post('/mappings/create', {
           mappingType: 'equivalence',
           fieldType: 'tv',
-          scope: {
-            level: 'league',
-            league: team?.league || 'MLB'
-          },
+          scope,
           rules: {
             primaryValue: broadcasterKey,
             equivalents: [selectedValue],
             caseSensitive: false
           },
           appliesTo: { scraped: true, api: true, oracle: true },
-          notes: `TV broadcaster mapping: ${broadcasterKey} = ${selectedValue}`
+          notes: `TV broadcaster mapping ${scopeLabel}: ${broadcasterKey} = ${selectedValue}`
         });
-        toast.success(`Mapped "${broadcasterKey}" → "${selectedValue}"`);
+        toast.success(`Mapped "${broadcasterKey}" → "${selectedValue}" ${scopeLabel}`);
       }
 
       // Track the saved mapping to show success state
@@ -3185,6 +3186,23 @@ function DiscrepanciesView({ comparison, team, source, isScheduleComparison, sou
                                       <option key={opt} value={opt}>{opt}</option>
                                     ))}
                                   </select>
+                                  <div className="tv-scope-selector" onClick={(e) => e.stopPropagation()}>
+                                    <button
+                                      className={`tv-scope-btn ${tvMappingScope === 'global' ? 'active' : ''}`}
+                                      onClick={() => setTvMappingScope('global')}
+                                      title="Apply to all teams and leagues"
+                                    >Global</button>
+                                    <button
+                                      className={`tv-scope-btn ${tvMappingScope === 'league' ? 'active' : ''}`}
+                                      onClick={() => setTvMappingScope('league')}
+                                      title={`Apply to all ${team?.league || 'MLB'} teams`}
+                                    >League</button>
+                                    <button
+                                      className={`tv-scope-btn ${tvMappingScope === 'team' ? 'active' : ''}`}
+                                      onClick={() => setTvMappingScope('team')}
+                                      title={`Apply to ${team?.teamName || 'this team'} only`}
+                                    >Team</button>
+                                  </div>
                                   <button
                                     className="btn-primary btn-sm"
                                     onClick={(e) => {
@@ -3514,7 +3532,7 @@ function BulkComparisonView({
                   End Date (Optional)
                 </label>
                 <div style={{ fontSize: '0.85em', color: '#856404', marginBottom: '0.75rem' }}>
-                  For ESPN modules: limits comparison to games on or before this date
+                  Limits comparison to games on or before this date
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <input

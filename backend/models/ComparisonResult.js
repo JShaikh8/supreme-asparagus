@@ -28,10 +28,17 @@ const comparisonResultSchema = new mongoose.Schema({
   // Summary statistics
   summary: {
     totalRecords: Number,
+    totalScraped: Number,
+    totalSource: Number,
+    matchPercentage: Number,
+    perfectMatches: Number,
+    matchesWithDiscrepancies: Number,
     matchedRecords: Number,
     differences: Number,
     missingInOracle: Number,
     missingInWeb: Number,
+    missingInScraped: Number,
+    missingInSource: Number,
     mappingsApplied: Number,
     duration: Number // milliseconds
   },
@@ -54,7 +61,13 @@ const comparisonResultSchema = new mongoose.Schema({
     mappingId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'MappingRule'
-    }
+    },
+    // Full game/player objects for schedule comparisons (needed for side-by-side display)
+    scraped: mongoose.Schema.Types.Mixed,
+    source: mongoose.Schema.Types.Mixed,
+    mappedFields: mongoose.Schema.Types.Mixed,
+    broadcaster: String,
+    isIgnored: Boolean
   }],
 
   // Game-by-game details for stats modules (basketball, football)

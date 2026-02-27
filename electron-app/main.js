@@ -5,6 +5,34 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { autoUpdater } = require('electron-updater');
+
+// Load .env files - use extraResources path when packaged (asar can't be read by dotenv)
+const envDir = app.isPackaged
+  ? path.join(process.resourcesPath, 'env')
+  : __dirname;
+const backendEnvPath = app.isPackaged
+  ? path.join(process.resourcesPath, 'env', 'backend.env')
+  : path.join(__dirname, 'backend', '.env');
+
+const envPath = path.join(envDir, '.env');
+const _envLog = [];
+_envLog.push(`[ENV] app.isPackaged: ${app.isPackaged}`);
+_envLog.push(`[ENV] Loading .env from: ${envPath} (exists: ${fs.existsSync(envPath)})`);
+_envLog.push(`[ENV] Loading backend.env from: ${backendEnvPath} (exists: ${fs.existsSync(backendEnvPath)})`);
+
+const result1 = require('dotenv').config({ path: envPath });
+const result2 = require('dotenv').config({ path: backendEnvPath });
+
+if (result1.error) _envLog.push(`[ENV] .env load error: ${result1.error.message}`);
+else _envLog.push(`[ENV] .env loaded ${Object.keys(result1.parsed || {}).length} vars`);
+if (result2.error) _envLog.push(`[ENV] backend.env load error: ${result2.error.message}`);
+else _envLog.push(`[ENV] backend.env loaded ${Object.keys(result2.parsed || {}).length} vars`);
+
+_envLog.push(`[ENV] MONGODB_URI set: ${!!process.env.MONGODB_URI}`);
+_envLog.push(`[ENV] ORACLE_CONNECT_STRING set: ${!!process.env.ORACLE_CONNECT_STRING}`);
+// Print immediately to console
+_envLog.forEach(m => console.log(m));
+
 const credentialManager = require('./utils/credentialManager');
 const config = require('./config');
 
@@ -30,6 +58,8 @@ log(`App packaged: ${app.isPackaged}`);
 log(`App path: ${app.getAppPath()}`);
 log(`Resources path: ${process.resourcesPath}`);
 log(`User data: ${app.getPath('userData')}`);
+// Write env debug info to log file
+_envLog.forEach(m => log(m));
 
 // Catch unhandled errors
 process.on('uncaughtException', (error) => {

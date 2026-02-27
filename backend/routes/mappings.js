@@ -376,22 +376,44 @@ router.post('/unmapped-tv', async (req, res) => {
       }
     }
 
+    // Build a map of what each value maps to (for checking if mappings resolve the counterpart)
+    const mappingConnections = new Map(); // value -> Set of connected values
+    for (const mapping of existingMappings) {
+      if (mapping.mappingType === 'equivalence') {
+        const primary = mapping.rules.primaryValue?.toLowerCase();
+        const equivalents = (mapping.rules.equivalents || []).map(e => e.toLowerCase());
+        const allValues = [primary, ...equivalents].filter(Boolean);
+        // Each value connects to all other values in the same mapping
+        for (const v of allValues) {
+          if (!mappingConnections.has(v)) mappingConnections.set(v, new Set());
+          for (const other of allValues) {
+            if (other !== v) mappingConnections.get(v).add(other);
+          }
+        }
+      }
+    }
+
     // Find unmapped Oracle broadcasters
+    // Only consider "mapped" if the mapping connects to a fetched broadcaster
     const unmappedOracle = oracleBroadcasters.filter(b => {
       const bLower = b.toLowerCase();
-      // Check if this broadcaster is mapped OR if it matches a fetched broadcaster directly
-      const isMapped = mappedValues.has(bLower);
       const hasDirectMatch = fetchedBroadcasters.some(f => f.toLowerCase() === bLower);
-      return !isMapped && !hasDirectMatch;
+      if (hasDirectMatch) return false;
+      // Check if any mapping connects this to a fetched broadcaster
+      const connections = mappingConnections.get(bLower) || new Set();
+      const mapsToFetched = fetchedBroadcasters.some(f => connections.has(f.toLowerCase()));
+      return !mapsToFetched;
     });
 
     // Find unmapped fetched broadcasters
     const unmappedFetched = fetchedBroadcasters.filter(b => {
       const bLower = b.toLowerCase();
-      // Check if this broadcaster is mapped OR if it matches an Oracle broadcaster directly
-      const isMapped = mappedValues.has(bLower);
       const hasDirectMatch = oracleBroadcasters.some(o => o.toLowerCase() === bLower);
-      return !isMapped && !hasDirectMatch;
+      if (hasDirectMatch) return false;
+      // Check if any mapping connects this to an Oracle broadcaster
+      const connections = mappingConnections.get(bLower) || new Set();
+      const mapsToOracle = oracleBroadcasters.some(o => connections.has(o.toLowerCase()));
+      return !mapsToOracle;
     });
 
     // Also return all available options for the dropdown
