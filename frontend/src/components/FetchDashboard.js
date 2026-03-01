@@ -77,6 +77,9 @@ function FetchDashboard({ teams }) {
   // MLB specific
   const [selectedSeason, setSelectedSeason] = useState(new Date().getFullYear());
   const [selectedRosterType, setSelectedRosterType] = useState('active');
+  const [playerLookupId, setPlayerLookupId] = useState('');
+  const [playerLookupData, setPlayerLookupData] = useState(null);
+  const [playerLookupLoading, setPlayerLookupLoading] = useState(false);
 
   // NBA Schedule - date range with defaults (Oct 1 - June 30)
   const [nbaScheduleStartDate, setNbaScheduleStartDate] = useState(() => {
@@ -470,6 +473,23 @@ function FetchDashboard({ teams }) {
       setError(errorMsg);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // MLB Player Lookup by person ID
+  const handlePlayerLookup = async () => {
+    if (!playerLookupId.trim()) return;
+    setPlayerLookupLoading(true);
+    setPlayerLookupData(null);
+    setError(null);
+    try {
+      const response = await axios.get(`/fetch/mlb/player/${playerLookupId.trim()}`);
+      setPlayerLookupData(response.data);
+    } catch (err) {
+      const errorMsg = err.response?.data?.error || err.message;
+      setError(errorMsg);
+    } finally {
+      setPlayerLookupLoading(false);
     }
   };
 
@@ -999,7 +1019,8 @@ function FetchDashboard({ teams }) {
             </>
           )}
 
-          {/* Baseline Creation Option */}
+          {/* Baseline, Force Refresh, Action Buttons */}
+          {(<>
           <div className="control-group" style={{
             marginTop: '1.5rem',
             padding: '0.75rem',
@@ -1111,32 +1132,120 @@ function FetchDashboard({ teams }) {
               </button>
             )}
 
-            {/* Load All MLB Rosters - special button for MLB league */}
+            {/* MLB Player Lookup */}
             {(singleFetchLeague === 'MLB' || singleFetchLeague === 'MILB') && (
-              <button
-                className="btn-secondary"
-                onClick={handleLoadAllMLBRosters}
-                disabled={loading}
-                style={{
-                  backgroundColor: '#e3f2fd',
-                  borderColor: '#1976d2',
-                  color: '#1565c0'
-                }}
-              >
-                {loading ? (
-                  <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: '8px' }}>
+                <input
+                  type="text"
+                  placeholder="MLB Person ID"
+                  value={playerLookupId}
+                  onChange={(e) => setPlayerLookupId(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handlePlayerLookup()}
+                  style={{
+                    width: '140px',
+                    padding: '8px 10px',
+                    border: '2px solid #e65100',
+                    borderRadius: '6px',
+                    fontSize: '0.9rem',
+                    backgroundColor: '#fff3e0',
+                    color: '#333'
+                  }}
+                />
+                <button
+                  className="btn-secondary"
+                  onClick={handlePlayerLookup}
+                  disabled={playerLookupLoading || !playerLookupId.trim()}
+                  style={{
+                    backgroundColor: '#fff3e0',
+                    borderColor: '#e65100',
+                    color: '#e65100',
+                    padding: '8px 12px'
+                  }}
+                >
+                  {playerLookupLoading ? (
                     <Loader2 size={16} className="spinner" />
-                    Loading All...
-                  </>
-                ) : (
-                  <>
-                    <Users size={16} />
-                    Load All MLB Rosters
-                  </>
-                )}
-              </button>
+                  ) : (
+                    <>
+                      <Search size={16} />
+                      Player Lookup
+                    </>
+                  )}
+                </button>
+              </div>
             )}
           </div>
+          </>)}
+        </div>
+      )}
+
+      {/* Player Lookup Results */}
+      {playerLookupData && (
+        <div style={{
+          margin: '1.5rem 0',
+          padding: '2rem',
+          backgroundColor: '#fff',
+          borderRadius: '10px',
+          border: '2px solid #1565c0',
+          color: '#222'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '2px solid #1565c0', paddingBottom: '1rem' }}>
+            <h2 style={{ margin: 0, fontSize: '1.5rem', color: '#1565c0' }}>
+              {playerLookupData.fullName}
+              {playerLookupData.primaryNumber && <span style={{ color: '#666', marginLeft: '10px' }}>#{playerLookupData.primaryNumber}</span>}
+            </h2>
+            <button
+              onClick={() => setPlayerLookupData(null)}
+              style={{ background: '#f5f5f5', border: '1px solid #ccc', borderRadius: '4px', color: '#666', cursor: 'pointer', padding: '4px 8px' }}
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem', marginBottom: '2rem', fontSize: '1rem', lineHeight: '1.8' }}>
+            <div><strong style={{ color: '#1565c0' }}>Position:</strong> {playerLookupData.primaryPosition?.name} ({playerLookupData.primaryPosition?.abbreviation})</div>
+            <div><strong style={{ color: '#1565c0' }}>Bats/Throws:</strong> {playerLookupData.batSide?.description} / {playerLookupData.pitchHand?.description}</div>
+            <div><strong style={{ color: '#1565c0' }}>Height/Weight:</strong> {playerLookupData.height}, {playerLookupData.weight} lbs</div>
+            <div><strong style={{ color: '#1565c0' }}>Age:</strong> {playerLookupData.currentAge}</div>
+            <div><strong style={{ color: '#1565c0' }}>Birth Date:</strong> {playerLookupData.birthDate}</div>
+            <div><strong style={{ color: '#1565c0' }}>Birthplace:</strong> {[playerLookupData.birthCity, playerLookupData.birthStateProvince, playerLookupData.birthCountry].filter(Boolean).join(', ')}</div>
+            <div><strong style={{ color: '#1565c0' }}>MLB Debut:</strong> {playerLookupData.mlbDebutDate || 'N/A'}</div>
+            {playerLookupData.pronunciation && <div><strong style={{ color: '#1565c0' }}>Pronunciation:</strong> {playerLookupData.pronunciation}</div>}
+            <div><strong style={{ color: '#1565c0' }}>Active:</strong> {playerLookupData.active ? 'Yes' : 'No'}</div>
+            <div>
+              <strong style={{ color: '#1565c0' }}>MLB ID:</strong> {playerLookupData.id}
+              {(() => {
+                const bisRef = playerLookupData.xrefIds?.find(x => x.xrefType === 'bis');
+                return bisRef ? <span style={{ marginLeft: '20px' }}><strong style={{ color: '#1565c0' }}>BIS ID:</strong> {bisRef.xrefId}</span> : null;
+              })()}
+            </div>
+          </div>
+
+          {/* Transactions */}
+          {playerLookupData.transactions && playerLookupData.transactions.length > 0 && (
+            <div>
+              <h3 style={{ margin: '0 0 0.75rem 0', fontSize: '1.1rem', color: '#1565c0' }}>Transaction History ({playerLookupData.transactions.length})</h3>
+              <div style={{ maxHeight: '500px', overflowY: 'auto', borderRadius: '6px', border: '1px solid #ddd' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                  <thead>
+                    <tr style={{ backgroundColor: '#e3f2fd' }}>
+                      <th style={{ padding: '10px 14px', textAlign: 'left', fontWeight: '600', color: '#1565c0', borderBottom: '2px solid #1565c0' }}>Date</th>
+                      <th style={{ padding: '10px 14px', textAlign: 'left', fontWeight: '600', color: '#1565c0', borderBottom: '2px solid #1565c0' }}>Type</th>
+                      <th style={{ padding: '10px 14px', textAlign: 'left', fontWeight: '600', color: '#1565c0', borderBottom: '2px solid #1565c0' }}>Description</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...playerLookupData.transactions].sort((a, b) => new Date(b.date) - new Date(a.date)).map((t, i) => (
+                      <tr key={t.id || i} style={{ backgroundColor: i % 2 === 0 ? '#fff' : '#f8f9fa', borderBottom: '1px solid #eee' }}>
+                        <td style={{ whiteSpace: 'nowrap', padding: '10px 14px', color: '#333' }}>{t.date}</td>
+                        <td style={{ whiteSpace: 'nowrap', padding: '10px 14px', color: '#555', fontWeight: '500' }}>{t.typeDesc}</td>
+                        <td style={{ padding: '10px 14px', color: '#333' }}>{t.description}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -6,6 +6,7 @@ const sidearmFetcher = require('../services/sidearmFetcher');
 const { validateModuleFetch, validateBulkFetch, validateTeamIdParam } = require('../middleware/validation');
 const { parallelProcess } = require('../utils/rateLimiter');
 const { RATE_LIMITS, HTTP_STATUS, ERROR_MESSAGES } = require('../constants');
+const axios = require('axios');
 
 // Import modules
 const NCAAFootballRosterModule = require('../modules/ncaa-football-roster');
@@ -263,6 +264,25 @@ router.post('/mlb/roster/:teamId', validateTeamIdParam, async (req, res) => {
       success: false,
       error: error.message
     });
+  }
+});
+
+// GET - Look up a single MLB player by person ID (no data saved)
+router.get('/mlb/player/:personId', async (req, res) => {
+  try {
+    const { personId } = req.params;
+    const url = `https://statsapi.mlb.com/api/v1/people/${personId}?hydrate=transactions,xrefId`;
+    const response = await axios.get(url);
+    const person = response.data?.people?.[0];
+    if (!person) {
+      return res.status(404).json({ error: 'Player not found' });
+    }
+    res.json(person);
+  } catch (error) {
+    if (error.response?.status === 404) {
+      return res.status(404).json({ error: 'Player not found' });
+    }
+    res.status(500).json({ error: error.message });
   }
 });
 
